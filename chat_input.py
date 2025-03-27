@@ -16,11 +16,10 @@ class ChatInput:
         return result if isinstance(result, str) else ""
 
 
-
     def _html(self) -> str:
         return f"""
         <style>
-            .input-card {{ width:100%; max-width:600px; padding:20px; border-radius:12px; box-shadow:0 4px 12px rgba(0,0,0,0.1); background:#fff; font-family:'Inter',sans-serif; }}
+            .input-card {{ width:100%; max-width:1100px; padding:20px; border-radius:12px; background:#fff; font-family:'Inter',sans-serif; }}
             .input-card textarea {{ width:100%; height:100px; padding:12px; font-size:16px; border:1px solid #ccc; border-radius:8px; resize:none; }}
             .input-footer {{ display:flex; justify-content:space-between; align-items:center; margin-top:10px; }}
             #char_count {{ font-size:14px; color:#555; }}
