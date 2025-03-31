@@ -1,0 +1,130 @@
+import streamlit as st
+
+class Header:
+    def render(self):
+        st.markdown(
+            """
+            <style>
+                /* Hide Streamlit’s default top bar, menu & footer */
+                [data-testid="stDecoration"], 
+                header[data-testid="stHeader"], 
+                #MainMenu, 
+                footer {
+                    display: none !important;
+                }
+
+                div[data-testid="column"] {
+                    padding: 0 !important;
+                    margin: 0 !important;
+                    width: 100% !important;
+                }
+                [data-testid="baseButton-header"]{
+                    display: none !important;
+                }
+
+                /* Remove default padding on main container */
+                [data-testid="block-container"]  {
+                    padding-left: 0 !important;
+                    padding-right: 0 !important;
+                }
+                [class^='st-emotion-cache-10oheav'] { 
+                    padding-top: 0rem; 
+                }
+
+                /* Fixed header styling */
+                [data-testid="stAppViewContainer"] .fixed-header {
+                    position: sticky;
+                    top: 0;
+                    width: 100%;
+                    background-color: #FAF9F6;
+                    padding: 10px 2%;
+                    z-index: 999;
+                    display: flex;
+                    justify-content: center;
+                    align-items: center;
+                    box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+                    background: #fff;
+                    font-family: 'Arial';
+                    position: relative;
+                }
+
+                /* Ensure header icons have proper size */
+                .header-icon {
+                    width: 1.5rem;
+                    margin-right: 0.5rem;
+                }
+                /* Enlarge left icon */
+                .header-left .header-icon {
+                    width: 2.5rem;
+                    height: auto;
+                    margin-right: 0.5rem;
+                }
+
+                /* Center title + icon together with underline */
+                .header-title {
+                    display: inline-flex;
+                    align-items: center;
+                    border-bottom: 0.2rem solid #004C97;
+                    margin: 0 auto;
+                }
+
+                /* Position email to far right and set text color to grey */
+                .header-email {
+                    position: absolute;
+                    right: 1rem;
+                    color: grey !important;
+                    font-family: Arial;
+                }
+
+                /* Remove padding from page content */
+                .block-container {
+                    padding-top: 0rem !important;
+                    padding-left: 0rem !important;
+                    padding-right: 0rem !important;
+                }
+
+                /* Responsive adjustments */
+                @media (max-width: 768px) {
+                    .fixed-header {
+                        flex-direction: column;
+                        align-items: flex-start;
+                        padding: 10px 1rem;
+                    }
+                    .header-email {
+                        position: static;
+                        margin-top: 5px;
+                    }
+                }
+            </style>
+
+            <div class="fixed-header">
+                <div class="header-left">
+                    <img src="https://images.rawpixel.com/image_png_800/cHJpdmF0ZS9sci9pbWFnZXMvd2Vic2l0ZS8yMDIyLTA2L2pvYjk0Ny0wNjctcC5wbmc.png" alt="Left Icon" class="header-icon"/>
+                </div>
+                <div class="header-title">
+                    <div style="background:white;
+                                border-radius:50%;
+                                width:33px;
+                                height:33px;
+                                display:flex;
+                                align-items:center;
+                                justify-content:center;
+                                cursor:pointer;">
+                      <svg width="21" height="21" viewBox="15 10 68 78" preserveAspectRatio="xMidYMid meet"
+                           xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" xml:space="preserve">
+                        <g transform="translate(-139 -593)">
+                          <path d="M187 647C183.7 647 181 644.3 181 641 181 637.7 183.7 635 187 635 190.3 635 193 637.7 193 641 193 644.3 190.3 647 187 647ZM221 639.7 214.8 637.8 199.6 633 204.5 623.5 195.1 628.4 190.2 613.1 188.2 606.9 187 603 185.7 607 183.8 613.2 179.1 628.4 169.6 623.5 174.5 632.9 159.3 637.7 153 639.6 149 640.9 153 642.2 159.1 644.2 174.4 649 169.5 658.4 178.9 653.5 183.7 668.7 185.6 674.9 186.9 678.9 188.2 674.9 190.2 668.7 195.1 653.4 204.5 658.3 199.5 648.9 214.7 644.1 220.9 642.1 224.9 640.8 221 639.7Z"/>
+                          <path d="M213.9 648.6C212.9 652.1 211.2 655.4 208.9 658.3 207.6 660 206 661.5 204.4 662.9 201.5 665.2 198.2 666.9 194.6 667.9L194 670 192.6 674.5C199.2 673.4 205.3 670.4 210.2 665.8 210.8 665.2 211.4 664.6 212 664 216.5 659.1 219.5 653 220.6 646.5L216 648 213.9 648.6Z"/>
+                          <path d="M194.7 614.1C198.2 615.1 201.5 616.8 204.3 619.1 206 620.4 207.5 622 208.9 623.7 211.2 626.6 212.9 629.8 213.9 633.4L216 634 220.5 635.4C219.4 628.9 216.4 622.8 211.9 617.9 211.3 617.3 210.7 616.7 210.1 616.1 205.2 611.6 199.2 608.6 192.6 607.5L194 612 194.7 614.1Z"/>
+                          <path d="M160.1 633.2C161.1 629.7 162.8 626.4 165.1 623.5 166.4 621.8 168 620.3 169.7 618.9 172.6 616.6 175.8 615 179.3 614L180 612 181.4 607.5C174.9 608.6 168.8 611.5 163.9 616 163.3 616.6 162.7 617.2 162.1 617.8 157.6 622.7 154.5 628.8 153.4 635.3L157.9 633.9 160.1 633.2Z"/>
+                          <path d="M179.3 667.9C175.8 666.9 172.5 665.2 169.6 662.9 167.9 661.6 166.4 660 165.1 658.4 162.8 655.5 161.1 652.2 160.1 648.7L158 648 153.5 646.6C154.6 653.2 157.6 659.3 162.1 664.1 162.7 664.7 163.3 665.3 163.9 665.9 168.8 670.4 174.9 673.4 181.4 674.5L179.9 670 179.3 667.9Z"/>
+                        </g>
+                      </svg>
+                    </div>
+                    <span><b>Policy Navigator</b></span>
+                </div>
+                <span class="header-email">example@epa.gov</span>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
