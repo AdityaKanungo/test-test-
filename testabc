@@ -1,0 +1,44 @@
+import os
+import glob
+import pandas as pd
+
+# Define the folder path containing your Excel files
+folder = "KPI Data"
+# Create a pattern to match your Excel files (assuming they contain "Master Historical Data.xlsx")
+file_pattern = os.path.join(folder, "*Master Historical Data.xlsx")
+files = glob.glob(file_pattern)
+
+# Lists to store dataframes from each file
+active_time_dfs = []
+agent_stats_dfs = []
+
+# Loop over each file and load the required sheets and columns
+for file in files:
+    # Read the "Active Time" sheet
+    active_df = pd.read_excel(file, sheet_name="Active Time")
+    # Select only the columns of interest from "Active Time"
+    # Change the column names if needed to match exactly what is in your file
+    active_columns = ['Day', 'Active_time', '_ready_time', 'busy_time']
+    active_df = active_df[active_columns]
+    
+    # Read the "Agent Stats" sheet
+    agent_df = pd.read_excel(file, sheet_name="Agent Stats")
+    # Select only the columns of interest from "Agent Stats"
+    # The following list assumes you want the columns: Day, Redirected, Rejected, short, and hold
+    agent_columns = ['Day', 'Redirected', 'Rejected', 'short', 'hold']
+    agent_df = agent_df[agent_columns]
+    
+    # Append the dataframes to the corresponding lists
+    active_time_dfs.append(active_df)
+    agent_stats_dfs.append(agent_df)
+
+# Optionally, concatenate all dataframes into a single dataframe for each sheet type
+all_active_time = pd.concat(active_time_dfs, ignore_index=True)
+all_agent_stats = pd.concat(agent_stats_dfs, ignore_index=True)
+
+# Display the first few rows of each combined dataframe (optional)
+print("Active Time Data:")
+print(all_active_time.head())
+
+print("\nAgent Stats Data:")
+print(all_agent_stats.head())
