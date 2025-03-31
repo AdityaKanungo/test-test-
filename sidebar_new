@@ -1,0 +1,112 @@
+import streamlit as st
+
+class Sidebar:
+    def render(self, history: list[str]):
+        st.markdown(
+            """
+            <style>
+                section[data-testid="stSidebar"] > div:first-child {
+                    display: flex;
+                    flex-direction: column;
+                    height: 100vh !important;
+                    overflow: hidden !important;
+                }
+                .sidebar-top {
+                    flex: 1;
+                    overflow-y: auto;
+                    padding: 1rem 2%;
+                    border-bottom: 1px solid rgba(255,255,255,0.2);
+                }
+                .sidebar-footer {
+                    padding: 1rem 2%;
+                    border-top: 0px solid rgba(255,255,255,0.2);
+                }
+                section[data-testid="stSidebar"] { 
+                    background-color: #004C97 !important; 
+                }
+                
+                /* Responsive adjustments */
+                @media (max-width: 768px) {
+                    .sidebar-top, .sidebar-footer {
+                        padding: 0.75rem 1rem;
+                    }
+                    section[data-testid="stSidebar"] {
+                        width: 100%;
+                    }
+                }
+            </style>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        st.sidebar.markdown(
+            """
+            <div class="sidebar-top">
+                <div style="display:flex; justify-content: space-between; align-items:center;">
+                    <h2 style="margin:0;color:white">Chat History</h2>
+                    <div style="background:white;
+                                border-radius:50%;
+                                width:30px;
+                                height:30px;
+                                display:flex;
+                                align-items:center;
+                                justify-content:center;
+                                cursor:pointer;">
+                      <svg width="20" height="20" viewBox="15 10 68 78" preserveAspectRatio="xMidYMid meet"
+                           xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" xml:space="preserve">
+                        <g transform="translate(-443 -597)">
+                          <path d="M521 617 504 617 504 612C504 608.1 500.9 605 497 605L485 605C481.1 605 478 608.1 478 612L478 617 461 617C458.8 617 457 618.8 457 621L457 625 525 625 525 621C525 618.8 523.2 617 521 617ZM484 612C484 611.4 484.4 611 485 611L497 611C497.6 611 498 611.4 498 612L498 617 484 617 484 612Z"/>
+                          <path d="M463 681C463 683.2 464.8 685 467 685L515 685C517.2 685 519 683.2 519 681L519 629 463 629 463 681ZM504 635 510 635 510 679 504 679 504 635ZM488 635 494 635 494 679 488 679 488 635ZM472 635 478 635 478 679 472 679 472 635Z"/>
+                        </g>
+                      </svg>
+                    </div>
+                </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        # Render chat history
+        for msg in history:
+            st.sidebar.markdown(f"<div style='padding:0.25rem 0;'>{msg}</div>", unsafe_allow_html=True)
+
+        # Insert empty placeholder rows with thin separators
+        for _ in range(5):
+            st.sidebar.markdown(
+                """
+                <div style="height:80px; border-bottom:1px solid rgba(255,255,255,0.2); display:flex; align-items:center; padding-left:1rem;">
+                    <svg width="24" height="40" viewBox="0 0 24 24" fill="none"
+                         stroke="white" stroke-width="1" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M21 5H3V15H15L18 17L17 15H21V5Z"/>
+                    </svg>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+        for _ in range(4):
+            st.sidebar.markdown("<div style='height:40px;'></div>", unsafe_allow_html=True)
+
+        # Close top section & render footer
+        st.sidebar.markdown(
+            """
+            </div>
+            <div class="sidebar-footer" style="display:flex; justify-content: space-between; align-items:center;">
+                <span style="margin:0; color:white; white-space: nowrap;">Export Chat History</span>
+                <div style="background:white;
+                            border-radius:50%;
+                            width:30px;
+                            height:30px;
+                            display:flex;
+                            align-items:center;
+                            justify-content:center;
+                            cursor:pointer;">
+                  <svg width="20" height="20" viewBox="15 10 68 78" preserveAspectRatio="xMidYMid meet"
+                       xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" xml:space="preserve">
+                    <g transform="translate(-592 -312)">
+                      <path d="M680 355 651.4 331 651.4 345C607.5 345.4 600 390 600 390 600 390 616.3 366.3 651.4 366L651.4 379 680 355Z"/>
+                    </g>
+                  </svg>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
