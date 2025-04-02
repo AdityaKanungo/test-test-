@@ -1,122 +1,46 @@
-import pandas as pd
-import numpy as np
-import statsmodels.formula.api as smf
-import seaborn as sns
-import matplotlib.pyplot as plt
+Slide 1: Approach & Objectives
 
-# 1. Data Preparation
+    Objective:
+    Investigate whether high missed calls on Monday impact call volume and performance later in the week.
 
-# Load the dataset (update the file path as needed)
-df = pd.read_csv('your_call_center_data.csv', parse_dates=['Day'])
+    Hypothesis:
+    A "High Missed Monday" creates a backlog that spills over into Tuesday/Wednesday.
 
-# Ensure the data is sorted by date
-df.sort_values('Day', inplace=True)
+    Data Used:
+    Daily metrics (Entered, Offered, Accepted, Abandoned, wait times, etc.) from the Genesys platform.
 
-# Calculate the missed_calls metric (adjust the formula if needed)
-df['missed_calls'] = df['Offered'] - df['Accepted']
+Slide 2: Analysis Process
 
-# Extract the day-of-week name
-df['Day_of_Week'] = df['Day'].dt.day_name()
+    Data Preparation:
 
-# Create a week identifier using the ISO calendar week
-df['Week'] = df['Day'].dt.isocalendar().week
+        Calculated missed calls = Offered – Accepted.
 
-# Identify Monday rows for threshold calculation
-monday_df = df[df['Day_of_Week'] == 'Monday'].copy()
+        Flagged Mondays with high missed calls (top 25%/75th percentile).
 
-# Determine threshold for high missed calls (e.g., 75th percentile for Mondays)
-threshold_missed = monday_df['missed_calls'].quantile(0.75)
+    Feature Engineering:
 
-# Create a binary flag for High Missed Monday
-df['High_Missed_Monday'] = np.where(
-    (df['Day_of_Week'] == 'Monday') & (df['missed_calls'] > threshold_missed),
-    1, 0
-)
+        Created a dummy variable for High Missed Monday.
 
-# Forward-fill the Monday flag for each week (so that Tuesday–Friday are labeled)
-df['High_Missed_Monday_FF'] = df.groupby('Week')['High_Missed_Monday'].transform('max')
+        One-hot encoded days of the week and built interaction terms (e.g., High_Missed_Monday × Tuesday).
 
-# Check a few rows to verify
-print(df[['Day', 'Day_of_Week', 'missed_calls', 'High_Missed_Monday', 'High_Missed_Monday_FF']].head(10))
+    Modeling & Visualization:
 
+        Descriptive statistics and regression analyses to test for spillover effects.
 
-# 2. One-Hot Encoding and Interaction Terms
+        Visualized results with Seaborn bar and line charts.
 
-# One-hot encode the day-of-week (creates Day_Monday, Day_Tuesday, etc.)
-day_dummies = pd.get_dummies(df['Day_of_Week'], prefix='Day')
-df = pd.concat([df, day_dummies], axis=1)
+Slide 3: Key Findings & Implications
 
-# Create interaction terms for each day (for Tuesday to Friday)
-for day in ['Tuesday', 'Wednesday', 'Thursday', 'Friday']:
-    df[f'High_Missed_Monday_Day_{day}'] = df['High_Missed_Monday_FF'] * df[f'Day_{day}']
+    Key Findings:
 
-# Verify the created features
-cols_to_check = ['Day_of_Week', 'High_Missed_Monday_FF'] + list(day_dummies.columns) + \
-                [f'High_Missed_Monday_Day_{day}' for day in ['Tuesday', 'Wednesday', 'Thursday', 'Friday']]
-print(df[cols_to_check].head(10))
+        High Missed Monday weeks show higher call volumes on Tuesday and Wednesday.
 
+        A noticeable dip on Thursday suggests backlog clearance.
 
-# 3. Descriptive Analysis
+        Friday call volumes converge between groups.
 
-# For analysis, focus on days after Monday (Tuesday-Friday)
-post_monday = df[df['Day_of_Week'] != 'Monday']
+    Business Implications:
 
-# Group by week and the High_Missed_Monday_FF flag, then compute mean metrics (e.g., call volume, avg accept time, avg handle time)
-weekly_summary = post_monday.groupby(['Week', 'High_Missed_Monday_FF']).agg({
-    'Entered': 'mean',
-    'avg_accept_time': 'mean',
-    'avg_handle_time': 'mean'
-}).reset_index()
+        Consider increasing staffing on Tuesday/Wednesday following a High Missed Monday.
 
-print("Weekly Summary (Tuesday-Friday):")
-print(weekly_summary.head(10))
-
-# Descriptive statistics for call volume (Entered) for Tuesday-Friday
-desc_stats = post_monday.groupby('High_Missed_Monday_FF')['Entered'].describe()
-print("\nDescriptive Statistics for Call Volume (Tuesday-Friday):")
-print(desc_stats)
-
-
-# 4. Visualizations with Seaborn
-
-# 4.A. Barplot: Average Call Volume by Day (Tuesday-Friday) and High Missed Monday flag
-plt.figure(figsize=(10, 6))
-sns.barplot(data=post_monday, x='Day_of_Week', y='Entered', hue='High_Missed_Monday_FF', 
-            order=['Tuesday', 'Wednesday', 'Thursday', 'Friday'])
-plt.title('Average Call Volume by Day (Tuesday-Friday) \nGrouped by High Missed Monday Flag')
-plt.xlabel('Day of Week')
-plt.ylabel('Average Call Volume (Entered)')
-plt.legend(title='High Missed Monday')
-plt.show()
-
-# 4.B. Line Plot: Daily Trend of Call Volume for High vs. Low Missed Monday Weeks
-# First, compute the average call volume per day-of-week and high missed flag
-day_summary = post_monday.groupby(['Day_of_Week', 'High_Missed_Monday_FF'])['Entered'].mean().reset_index()
-
-# Order the days in a logical sequence
-day_order = ['Tuesday', 'Wednesday', 'Thursday', 'Friday']
-plt.figure(figsize=(10, 6))
-sns.lineplot(data=day_summary, x='Day_of_Week', y='Entered', hue='High_Missed_Monday_FF', 
-             marker='o', sort=False, hue_order=[0, 1])
-plt.title('Daily Trend of Average Call Volume \nfor High vs. Low Missed Monday Weeks')
-plt.xlabel('Day of Week')
-plt.ylabel('Average Call Volume (Entered)')
-plt.xticks(ticks=range(len(day_order)), labels=day_order)
-plt.legend(title='High Missed Monday', labels=['Low', 'High'])
-plt.show()
-
-
-# 5. Regression Analysis with Interaction Effects
-
-# As an example, run a regression model for Tuesday's call volume.
-tuesday_data = df[df['Day_of_Week'] == 'Tuesday'].copy()
-
-# Define the regression formula:
-# 'Entered' is the dependent variable; we include the high missed Monday flag and its interaction with Tuesday.
-formula = 'Entered ~ High_Missed_Monday_FF + High_Missed_Monday_Day_Tuesday'
-model = smf.ols(formula, data=tuesday_data)
-results = model.fit()
-print("\nRegression Results for Tuesday Call Volume:")
-print(results.summary())
-
-# (Optional) Repeat similar regression analysis for other days (Wednesday, Thursday, Friday) by filtering accordingly.
+        Use real-time monitoring of Monday performance to adjust scheduling.
