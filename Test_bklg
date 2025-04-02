@@ -1,0 +1,132 @@
+import pandas as pd
+import numpy as np
+import seaborn as sns
+import matplotlib.pyplot as plt
+import statsmodels.formula.api as smf
+
+# -------------------------------
+# 1. Data Preparation
+# -------------------------------
+# Load the dataset (update path as needed)
+df = pd.read_excel('2018-2024 All Queue Per Day Data.xlsx')
+
+# Ensure the date column is in datetime format and sort by date
+df['Day'] = pd.to_datetime(df['Day'])
+df.sort_values('Day', inplace=True)
+
+# Calculate missed_calls as Offered - Accepted (adjust as needed)
+df['missed_calls'] = df['Offered'] - df['Accepted']
+
+# Extract calendar features
+df['Day_of_Week'] = df['Day'].dt.day_name()
+df['Week'] = df['Day'].dt.isocalendar().week
+df['Year'] = df['Day'].dt.year
+df['Month'] = df['Day'].dt.month
+# Create a unique identifier for each week (YearWeek)
+df['YearWeek'] = df['Year'].astype(str) + '_' + df['Week'].astype(str)
+
+# -------------------------------
+# 2. Flag High Missed Monday and Forward-Fill
+# -------------------------------
+# Define high missed calls threshold for Mondays (e.g., 75th percentile)
+monday_df = df[df['Day_of_Week'] == 'Monday'].copy()
+threshold_missed = monday_df['missed_calls'].quantile(0.75)
+
+# Flag Mondays that exceed the threshold
+df['High_Missed_Monday'] = np.where(
+    (df['Day_of_Week'] == 'Monday') & (df['missed_calls'] > threshold_missed),
+    1, 0
+)
+
+# Forward-fill the Monday flag within each unique week
+df['High_Missed_Monday_FF'] = df.groupby('YearWeek')['High_Missed_Monday'].transform('max')
+
+# -------------------------------
+# 3. One-Hot Encoding & Interaction Terms
+# -------------------------------
+# Create day-of-week dummies
+day_dummies = pd.get_dummies(df['Day_of_Week'], prefix='Day')
+df = pd.concat([df, day_dummies], axis=1)
+
+# Create interaction terms for Tuesday through Friday
+for day in ['Tuesday', 'Wednesday', 'Thursday', 'Friday']:
+    df[f'High_Missed_Monday_Day_{day}'] = df['High_Missed_Monday_FF'] * df[f'Day_{day}']
+
+# -------------------------------
+# 4. Visualizations with Seaborn
+# -------------------------------
+
+# 4.A. Bar Plot: Average Call Volume (Offered) by Day (Tuesday-Friday) with High Missed Monday flag
+post_monday = df[df['Day_of_Week'] != 'Monday']
+
+plt.figure(figsize=(10, 6))
+bar_plot = sns.barplot(
+    data=post_monday, 
+    x='Day_of_Week', 
+    y='Offered', 
+    hue='High_Missed_Monday_FF', 
+    order=['Tuesday', 'Wednesday', 'Thursday', 'Friday'],
+    ci='sd'
+)
+bar_plot.set_title('Average Call Volume by Day (Tue-Fri)\nGrouped by High Missed Monday Flag', fontsize=14)
+bar_plot.set_xlabel('Day of Week', fontsize=12)
+bar_plot.set_ylabel('Average Offered Calls', fontsize=12)
+bar_plot.legend(title='High Missed Monday', labels=['Low', 'High'])
+plt.tight_layout()
+plt.show()
+
+# 4.B. Line Plot: Daily Trend of Average Call Volume by High Missed Monday Flag
+day_summary = post_monday.groupby(['Day_of_Week', 'High_Missed_Monday_FF'])['Offered'].mean().reset_index()
+# Reorder days logically
+day_order = ['Tuesday', 'Wednesday', 'Thursday', 'Friday']
+
+plt.figure(figsize=(10, 6))
+line_plot = sns.lineplot(
+    data=day_summary, 
+    x='Day_of_Week', 
+    y='Offered', 
+    hue='High_Missed_Monday_FF', 
+    marker='o',
+    sort=False,
+    hue_order=[0, 1]
+)
+line_plot.set_title('Daily Trend of Average Offered Calls\nby High Missed Monday Flag', fontsize=14)
+line_plot.set_xlabel('Day of Week', fontsize=12)
+line_plot.set_ylabel('Average Offered Calls', fontsize=12)
+plt.xticks(ticks=range(len(day_order)), labels=day_order)
+line_plot.legend(title='High Missed Monday', labels=['Low', 'High'])
+plt.tight_layout()
+plt.show()
+
+# -------------------------------
+# 5. Comprehensive Regression Analysis
+# -------------------------------
+# Build a regression model to predict Offered calls on a given day
+# Including:
+#   - The effect of a High Missed Monday (forward-filled)
+#   - Day-of-week as categorical variable
+#   - Interaction between High_Missed_Monday_FF and Day_of_Week
+#   - Control for Month (to capture seasonality)
+
+# We use C(Day_of_Week) to treat day-of-week as categorical
+formula = 'Offered ~ High_Missed_Monday_FF + C(Day_of_Week) + High_Missed_Monday_FF:C(Day_of_Week) + C(Month)'
+model = smf.ols(formula, data=post_monday)
+results = model.fit()
+print(results.summary())
+
+# -------------------------------
+# 6. Interpreting Effect Sizes & Significance
+# -------------------------------
+# After running the regression, key elements to look at:
+# - The coefficient for High_Missed_Monday_FF: Indicates the overall shift in Offered calls in weeks with a high missed Monday.
+# - Interaction terms (High_Missed_Monday_FF:C(Day_of_Week)[T.<day>]): These show how the effect of a High Missed Monday varies by day.
+# - p-values: Check if these coefficients are statistically significant (typically p < 0.05).
+# - R-squared: Provides an idea of how much variance in Offered calls is explained by the model.
+#
+# For example:
+#   - A positive, significant coefficient on the interaction term for Tuesday suggests that on Tuesdays, having a high missed Monday
+#     is associated with an increase in call volume beyond the baseline.
+#   - The magnitude (effect size) tells you by how many calls the volume changes on average.
+#
+# You can further refine the model by adding more control variables (e.g., special events, promotions) if available.
+
