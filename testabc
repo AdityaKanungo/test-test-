@@ -1,44 +1,122 @@
-import os
-import glob
 import pandas as pd
+import numpy as np
+import statsmodels.formula.api as smf
+import seaborn as sns
+import matplotlib.pyplot as plt
 
-# Define the folder path containing your Excel files
-folder = "KPI Data"
-# Create a pattern to match your Excel files (assuming they contain "Master Historical Data.xlsx")
-file_pattern = os.path.join(folder, "*Master Historical Data.xlsx")
-files = glob.glob(file_pattern)
+# 1. Data Preparation
 
-# Lists to store dataframes from each file
-active_time_dfs = []
-agent_stats_dfs = []
+# Load the dataset (update the file path as needed)
+df = pd.read_csv('your_call_center_data.csv', parse_dates=['Day'])
 
-# Loop over each file and load the required sheets and columns
-for file in files:
-    # Read the "Active Time" sheet
-    active_df = pd.read_excel(file, sheet_name="Active Time")
-    # Select only the columns of interest from "Active Time"
-    # Change the column names if needed to match exactly what is in your file
-    active_columns = ['Day', 'Active_time', '_ready_time', 'busy_time']
-    active_df = active_df[active_columns]
-    
-    # Read the "Agent Stats" sheet
-    agent_df = pd.read_excel(file, sheet_name="Agent Stats")
-    # Select only the columns of interest from "Agent Stats"
-    # The following list assumes you want the columns: Day, Redirected, Rejected, short, and hold
-    agent_columns = ['Day', 'Redirected', 'Rejected', 'short', 'hold']
-    agent_df = agent_df[agent_columns]
-    
-    # Append the dataframes to the corresponding lists
-    active_time_dfs.append(active_df)
-    agent_stats_dfs.append(agent_df)
+# Ensure the data is sorted by date
+df.sort_values('Day', inplace=True)
 
-# Optionally, concatenate all dataframes into a single dataframe for each sheet type
-all_active_time = pd.concat(active_time_dfs, ignore_index=True)
-all_agent_stats = pd.concat(agent_stats_dfs, ignore_index=True)
+# Calculate the missed_calls metric (adjust the formula if needed)
+df['missed_calls'] = df['Offered'] - df['Accepted']
 
-# Display the first few rows of each combined dataframe (optional)
-print("Active Time Data:")
-print(all_active_time.head())
+# Extract the day-of-week name
+df['Day_of_Week'] = df['Day'].dt.day_name()
 
-print("\nAgent Stats Data:")
-print(all_agent_stats.head())
+# Create a week identifier using the ISO calendar week
+df['Week'] = df['Day'].dt.isocalendar().week
+
+# Identify Monday rows for threshold calculation
+monday_df = df[df['Day_of_Week'] == 'Monday'].copy()
+
+# Determine threshold for high missed calls (e.g., 75th percentile for Mondays)
+threshold_missed = monday_df['missed_calls'].quantile(0.75)
+
+# Create a binary flag for High Missed Monday
+df['High_Missed_Monday'] = np.where(
+    (df['Day_of_Week'] == 'Monday') & (df['missed_calls'] > threshold_missed),
+    1, 0
+)
+
+# Forward-fill the Monday flag for each week (so that Tuesday–Friday are labeled)
+df['High_Missed_Monday_FF'] = df.groupby('Week')['High_Missed_Monday'].transform('max')
+
+# Check a few rows to verify
+print(df[['Day', 'Day_of_Week', 'missed_calls', 'High_Missed_Monday', 'High_Missed_Monday_FF']].head(10))
+
+
+# 2. One-Hot Encoding and Interaction Terms
+
+# One-hot encode the day-of-week (creates Day_Monday, Day_Tuesday, etc.)
+day_dummies = pd.get_dummies(df['Day_of_Week'], prefix='Day')
+df = pd.concat([df, day_dummies], axis=1)
+
+# Create interaction terms for each day (for Tuesday to Friday)
+for day in ['Tuesday', 'Wednesday', 'Thursday', 'Friday']:
+    df[f'High_Missed_Monday_Day_{day}'] = df['High_Missed_Monday_FF'] * df[f'Day_{day}']
+
+# Verify the created features
+cols_to_check = ['Day_of_Week', 'High_Missed_Monday_FF'] + list(day_dummies.columns) + \
+                [f'High_Missed_Monday_Day_{day}' for day in ['Tuesday', 'Wednesday', 'Thursday', 'Friday']]
+print(df[cols_to_check].head(10))
+
+
+# 3. Descriptive Analysis
+
+# For analysis, focus on days after Monday (Tuesday-Friday)
+post_monday = df[df['Day_of_Week'] != 'Monday']
+
+# Group by week and the High_Missed_Monday_FF flag, then compute mean metrics (e.g., call volume, avg accept time, avg handle time)
+weekly_summary = post_monday.groupby(['Week', 'High_Missed_Monday_FF']).agg({
+    'Entered': 'mean',
+    'avg_accept_time': 'mean',
+    'avg_handle_time': 'mean'
+}).reset_index()
+
+print("Weekly Summary (Tuesday-Friday):")
+print(weekly_summary.head(10))
+
+# Descriptive statistics for call volume (Entered) for Tuesday-Friday
+desc_stats = post_monday.groupby('High_Missed_Monday_FF')['Entered'].describe()
+print("\nDescriptive Statistics for Call Volume (Tuesday-Friday):")
+print(desc_stats)
+
+
+# 4. Visualizations with Seaborn
+
+# 4.A. Barplot: Average Call Volume by Day (Tuesday-Friday) and High Missed Monday flag
+plt.figure(figsize=(10, 6))
+sns.barplot(data=post_monday, x='Day_of_Week', y='Entered', hue='High_Missed_Monday_FF', 
+            order=['Tuesday', 'Wednesday', 'Thursday', 'Friday'])
+plt.title('Average Call Volume by Day (Tuesday-Friday) \nGrouped by High Missed Monday Flag')
+plt.xlabel('Day of Week')
+plt.ylabel('Average Call Volume (Entered)')
+plt.legend(title='High Missed Monday')
+plt.show()
+
+# 4.B. Line Plot: Daily Trend of Call Volume for High vs. Low Missed Monday Weeks
+# First, compute the average call volume per day-of-week and high missed flag
+day_summary = post_monday.groupby(['Day_of_Week', 'High_Missed_Monday_FF'])['Entered'].mean().reset_index()
+
+# Order the days in a logical sequence
+day_order = ['Tuesday', 'Wednesday', 'Thursday', 'Friday']
+plt.figure(figsize=(10, 6))
+sns.lineplot(data=day_summary, x='Day_of_Week', y='Entered', hue='High_Missed_Monday_FF', 
+             marker='o', sort=False, hue_order=[0, 1])
+plt.title('Daily Trend of Average Call Volume \nfor High vs. Low Missed Monday Weeks')
+plt.xlabel('Day of Week')
+plt.ylabel('Average Call Volume (Entered)')
+plt.xticks(ticks=range(len(day_order)), labels=day_order)
+plt.legend(title='High Missed Monday', labels=['Low', 'High'])
+plt.show()
+
+
+# 5. Regression Analysis with Interaction Effects
+
+# As an example, run a regression model for Tuesday's call volume.
+tuesday_data = df[df['Day_of_Week'] == 'Tuesday'].copy()
+
+# Define the regression formula:
+# 'Entered' is the dependent variable; we include the high missed Monday flag and its interaction with Tuesday.
+formula = 'Entered ~ High_Missed_Monday_FF + High_Missed_Monday_Day_Tuesday'
+model = smf.ols(formula, data=tuesday_data)
+results = model.fit()
+print("\nRegression Results for Tuesday Call Volume:")
+print(results.summary())
+
+# (Optional) Repeat similar regression analysis for other days (Wednesday, Thursday, Friday) by filtering accordingly.
