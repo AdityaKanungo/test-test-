@@ -1,132 +1,283 @@
+Monday Backlog Call Center Analysis (2018–2024)
+
+Call center volumes often peak on Mondays, especially after weekends​
+reddit.com
+. A busy Monday with many unanswered calls can create a backlog, potentially affecting service levels in subsequent days. Here we provide a comprehensive Python analysis for daily call center data (2018–2024) to investigate the Monday backlog effect. We will calculate key metrics, flag high-backlog Mondays, and compare Tuesday–Friday performance after such Mondays versus normal weeks. Finally, we use statistical tests and regression modeling (OLS) – along with visualizations – to quantify Monday’s impact and check for interactions by day of week.
+1. Data Preparation and Overview
+
+First, load the dataset and prepare useful date-related columns:
+
+    Load the data: Assume a CSV file (or similar) with daily records; parse the date column.
+
+    Create date features: Extract day of week names and compute the week’s start (Monday) for each date. This will help group days by the week they belong to.
+
+    Sort data chronologically: Ensure records are in date order for time series analysis.
+
 import pandas as pd
 import numpy as np
-import seaborn as sns
-import matplotlib.pyplot as plt
-import statsmodels.formula.api as smf
 
-# -------------------------------
-# 1. Data Preparation
-# -------------------------------
-# Load the dataset (update path as needed)
-df = pd.read_excel('2018-2024 All Queue Per Day Data.xlsx')
+# Load data from CSV (adjust file path and name as needed)
+df = pd.read_csv('call_center_daily_2018_2024.csv', parse_dates=['Day'])
 
-# Ensure the date column is in datetime format and sort by date
-df['Day'] = pd.to_datetime(df['Day'])
+# Create day-of-week name for each date
+df['DayOfWeek'] = df['Day'].dt.day_name()
+
+# Calculate week start (Monday) for each date to identify the week
+df['Week_Start'] = df['Day'] - pd.to_timedelta(df['Day'].dt.weekday, unit='D')
+
+# Sort by date just to be safe (chronological order)
 df.sort_values('Day', inplace=True)
 
-# Calculate missed_calls as Offered - Accepted (adjust as needed)
-df['missed_calls'] = df['Offered'] - df['Accepted']
+# Quick check of data structure
+print(df[['Day', 'DayOfWeek', 'Entered', 'Offered', 'Accepted']].head(5))
 
-# Extract calendar features
-df['Day_of_Week'] = df['Day'].dt.day_name()
-df['Week'] = df['Day'].dt.isocalendar().week
-df['Year'] = df['Day'].dt.year
-df['Month'] = df['Day'].dt.month
-# Create a unique identifier for each week (YearWeek)
-df['YearWeek'] = df['Year'].astype(str) + '_' + df['Week'].astype(str)
+Explanation: We added a DayOfWeek column using dt.day_name() for clarity (e.g., "Monday", "Tuesday"), and a Week_Start column which gives the date of that week’s Monday (by subtracting the weekday offset). This Week_Start will be the same for all dates in the same week, allowing easy grouping by week. We then sort the DataFrame by date. The quick print shows a sample of the relevant columns to verify the transformations.
+2. Calculating Missed Calls and Total Time Metrics
 
-# -------------------------------
-# 2. Flag High Missed Monday and Forward-Fill
-# -------------------------------
-# Define high missed calls threshold for Mondays (e.g., 75th percentile)
-monday_df = df[df['Day_of_Week'] == 'Monday'].copy()
-threshold_missed = monday_df['missed_calls'].quantile(0.75)
+Next, we derive additional metrics needed for the analysis:
 
-# Flag Mondays that exceed the threshold
-df['High_Missed_Monday'] = np.where(
-    (df['Day_of_Week'] == 'Monday') & (df['missed_calls'] > threshold_missed),
-    1, 0
-)
+    Missed Calls: Calculate daily missed calls as Offered - Accepted (calls that entered the queue but were never answered by an agent).
 
-# Forward-fill the Monday flag within each unique week
-df['High_Missed_Monday_FF'] = df.groupby('YearWeek')['High_Missed_Monday'].transform('max')
+    Total times: For each time-based metric, compute the total time by multiplying the average time by the count of occurrences. The dataset provides average times (e.g., Avg_distribute_time = total_distribute_time / Distributed), so we reverse those formulas:
 
-# -------------------------------
-# 3. One-Hot Encoding & Interaction Terms
-# -------------------------------
-# Create day-of-week dummies
-day_dummies = pd.get_dummies(df['Day_of_Week'], prefix='Day')
-df = pd.concat([df, day_dummies], axis=1)
+        Total_distribute_time = Avg_distribute_time * Distributed
 
-# Create interaction terms for Tuesday through Friday
-for day in ['Tuesday', 'Wednesday', 'Thursday', 'Friday']:
-    df[f'High_Missed_Monday_Day_{day}'] = df['High_Missed_Monday_FF'] * df[f'Day_{day}']
+        Total_accept_time = avg_accept_time * Offered
 
-# -------------------------------
-# 4. Visualizations with Seaborn
-# -------------------------------
+        Total_abandoned_waiting_time = avg_abandoned_waiting_time * Standard_abandoned_waiting
 
-# 4.A. Bar Plot: Average Call Volume (Offered) by Day (Tuesday-Friday) with High Missed Monday flag
-post_monday = df[df['Day_of_Week'] != 'Monday']
+        Total_engage_time = avg_engage_time * Accepted
 
-plt.figure(figsize=(10, 6))
-bar_plot = sns.barplot(
-    data=post_monday, 
-    x='Day_of_Week', 
-    y='Offered', 
-    hue='High_Missed_Monday_FF', 
-    order=['Tuesday', 'Wednesday', 'Thursday', 'Friday'],
-    ci='sd'
-)
-bar_plot.set_title('Average Call Volume by Day (Tue-Fri)\nGrouped by High Missed Monday Flag', fontsize=14)
-bar_plot.set_xlabel('Day of Week', fontsize=12)
-bar_plot.set_ylabel('Average Offered Calls', fontsize=12)
-bar_plot.legend(title='High Missed Monday', labels=['Low', 'High'])
-plt.tight_layout()
+        Total_wrap_time = avg_wrap_time * Accepted
+
+        Total_hold_time = avg_hold_time * Offered
+
+        Total_handle_time = avg_handle_time * Accepted
+
+# Add missed call volume (calls offered but not answered by an agent)
+df['Missed_Calls'] = df['Offered'] - df['Accepted']
+
+# Calculate total times from average times
+time_metrics = {
+    'Avg_distribute_time': 'Distributed',
+    'avg_accept_time': 'Offered',
+    'avg_abandoned_waiting_time': 'Standard_abandoned_waiting',
+    'avg_engage_time': 'Accepted',
+    'avg_wrap_time': 'Accepted',
+    'avg_hold_time': 'Offered',
+    'avg_handle_time': 'Accepted'
+}
+for avg_col, count_col in time_metrics.items():
+    total_col = 'Total' + avg_col[3:]  # e.g. 'Avg_distribute_time' -> 'Total_distribute_time'
+    df[total_col] = df[avg_col] * df[count_col]
+
+# Verify new columns on a sample day
+print(df.loc[0, ['Offered', 'Accepted', 'Missed_Calls', 
+                 'Avg_distribute_time', 'Distributed', 'Total_distribute_time']])
+
+Explanation: We create a Missed_Calls column as the difference between Offered (calls that reached an agent or could have) and Accepted (calls answered). We also compute total time metrics for each category by multiplying the provided average by the count of instances. For example, if on a given day Distributed = 100 and Avg_distribute_time = 30 seconds, then Total_distribute_time = 100 * 30 = 3000 seconds of distribution time that day. We perform this for all time-based features. The code uses a dictionary to automate these calculations, and a sample print verifies one of the new total columns.
+3. Identifying “High Missed Call Monday” Days
+
+We will flag Mondays that had exceptionally high missed call volume or low answer rates, as these indicate backlog conditions:
+
+    Filter Mondays: Extract all Monday records from the dataset.
+
+    Determine thresholds: Compute the 75th percentile of Monday missed calls and the 25th percentile of Monday answer rates across the dataset (these serve as cutoff points for “high missed calls” and “low answer rate” respectively).
+
+    Flag condition: Mark a Monday as High Missed Call Monday if either its missed call count is in the top 25% of Mondays or its answer rate is in the bottom 25% of Mondays.
+
+    Apply flag to dataset: Create a flag column and propagate this flag to all days of the same week, so we can easily identify which weeks had a high-backlog Monday.
+
+# Filter Monday records to analyze their distribution
+monday_df = df[df['DayOfWeek'] == 'Monday']
+
+# Compute threshold values for top 25% missed calls and bottom 25% answer rate (among Mondays)
+missed_75th = monday_df['Missed_Calls'].quantile(0.75)
+answer_rate_25th = monday_df['Answer_Rate'].quantile(0.25)
+
+# Flag Mondays meeting either criterion
+monday_df['HighMondayFlag'] = ((monday_df['Missed_Calls'] >= missed_75th) | 
+                               (monday_df['Answer_Rate'] <= answer_rate_25th))
+
+# Merge flag back to the main DataFrame for all days based on week start (Monday date)
+monday_flags = monday_df[['Week_Start', 'HighMondayFlag']]
+df = df.merge(monday_flags, on='Week_Start', how='left')
+
+# Fill NaN (for weeks with no Monday data) with False and convert to boolean
+df['HighMondayFlag'] = df['HighMondayFlag'].fillna(False).astype(bool)
+
+# Count how many Mondays were flagged (for info)
+num_mondays_flagged = monday_df['HighMondayFlag'].sum()
+total_mondays = len(monday_df)
+print(f"High Missed Call Mondays: {num_mondays_flagged} out of {total_mondays} Mondays ({num_mondays_flagged/total_mondays:.1%})")
+
+Explanation: We first isolate Monday records and compute the 75th percentile of Missed_Calls and the 25th percentile of Answer_Rate for Mondays. For example, if the 75th percentile of missed calls on Monday is 50, then any Monday with ≥50 missed calls is in the top quartile of missed calls. Similarly, if the 25th percentile of Monday answer rate is 0.85 (85%), then any Monday with ≤85% answer rate is in the bottom quartile. We then create a boolean HighMondayFlag for Mondays meeting either condition. Next, we propagate this flag to all days of the same week using the Week_Start key (each week’s Monday date). After merging, every day in a week inherits the Monday’s flag value. If a week’s Monday was high-missed-call, then HighMondayFlag will be True for Monday through Friday of that week (we could also include weekends if present, though our analysis will focus on weekdays). The printout shows how many Mondays were flagged, giving a sense of frequency.
+4. Comparing Tuesday–Friday Performance After High-Backlog Mondays vs. Other Weeks
+
+With the flag in place, we compare key performance metrics on Tuesdays through Fridays following a high-backlog Monday against those following a normal Monday:
+
+    Subset the data: Focus on Tuesday–Friday records only. Split this subset into two groups: one where the week’s Monday was flagged (HighMondayFlag=True) and one where it was not.
+
+    Compute summary statistics: Compare average values of key metrics (such as Offered calls, Accepted calls, Missed calls, Answer_Rate, etc.) between the two groups.
+
+    Statistical significance: Use a t-test (Welch’s t-test for unequal variances) to see if differences in metrics (e.g., Tuesday call volume) are statistically significant when Monday was high-backlog vs normal.
+
+    Observation: This helps identify how a bad Monday might carry over into the rest of the week (for instance, do Tuesdays after a high-missed-call Monday see higher call volume or lower service levels than usual?).
+
+# Filter data for Tuesday–Friday only
+weekday_mask = df['DayOfWeek'].isin(['Tuesday', 'Wednesday', 'Thursday', 'Friday'])
+post_monday_df = df[weekday_mask]
+
+# Split into two groups based on Monday flag
+post_high = post_monday_df[ post_monday_df['HighMondayFlag'] == True ]
+post_normal = post_monday_df[ post_monday_df['HighMondayFlag'] == False ]
+
+# Compare average key metrics in each group
+metrics = ['Offered', 'Accepted', 'Missed_Calls', 'Answer_Rate']
+summary = {metric: (post_high[metric].mean(), post_normal[metric].mean()) for metric in metrics}
+for metric, (mean_high, mean_norm) in summary.items():
+    print(f"{metric}: mean after High-Monday = {mean_high:.2f}, mean after Normal-Monday = {mean_norm:.2f}")
+
+# Perform t-test for a key metric, e.g., Offered calls, comparing the two groups
+from scipy import stats
+t_stat, p_val = stats.ttest_ind(post_high['Offered'], post_normal['Offered'], equal_var=False)
+print(f"T-test for Offered calls: t-stat={t_stat:.2f}, p-value={p_val:.3f}")
+
+Explanation: We filter the DataFrame to include only Tuesday–Friday dates (post_monday_df). Using the HighMondayFlag, we split this into post_high (days in weeks with a high missed-call Monday) and post_normal (days in weeks with a normal Monday). We then calculate mean values of several metrics for each group. For instance, if we find that the average Offered calls on Tue–Fri is higher in the post_high group than in post_normal, it suggests that a busy Monday might lead to higher volumes later in the week (possibly customers calling back). We also perform an example t-test on Offered calls to check if the difference is statistically significant. The t-test output gives a t-statistic and p-value; a low p-value (e.g., < 0.05) would indicate a significant difference in Tuesday–Friday call volume between high-backlog weeks and normal weeks.
+
+(In a full analysis, we might repeat such t-tests for other metrics like Answer_Rate or Missed_Calls on specific days. For brevity, we show one example here.)
+5. Lagged Monday Features and Impact Analysis (T-Tests and Regression)
+
+To further quantify Monday’s impact on subsequent days, we incorporate lagged Monday features into a regression analysis:
+
+    Lagged features: Add Monday’s key metrics (e.g., Monday’s missed calls) as features for the rest of the week. For each day (Tue–Fri), we attach the preceding Monday’s missed call count. This will allow us to directly assess the relationship between Monday’s performance and the metrics on following days.
+
+    By-day comparison (t-tests): We can test each day individually. For example, perform a t-test comparing Tuesday metrics in weeks with high vs normal Monday (and similarly for Wednesday, etc.). This checks if specific days are significantly different following a bad Monday.
+
+    Regression model (OLS): Build an OLS regression using Monday’s missed calls as a predictor of daily performance (e.g., number of calls Offered on Tue–Fri), including day-of-week indicators:
+
+        The model can be Yd=β0+β1MondayMissed+β2IWed+β3IThu+β4IFri+β5(MondayMissed×IWed)+β6(MondayMissed×IThu)+β7(MondayMissed×IFri)+ϵYd​=β0​+β1​MondayMissed+β2​IWed​+β3​IThu​+β4​IFri​+β5​(MondayMissed×IWed​)+β6​(MondayMissed×IThu​)+β7​(MondayMissed×IFri​)+ϵ, where YdYd​ is the metric for a given day d (Tuesday as baseline).
+
+        This allows the effect of Monday’s missed calls (β1β1​) to differ by day of week (interaction terms). We will check if β1β1​ is significantly positive (indicating overall Tuesday effect) and whether interaction terms are significant (indicating the effect is larger or smaller on Wed/Thu/Fri compared to Tuesday).
+
+    Interpretation: A significant positive relationship would mean a higher Monday backlog tends to increase call volume (or whatever Y is) on subsequent days. Interactions tell us if this carry-over effect is strongest on Tuesday or persists throughout the week.
+
+# Create a column for Monday's missed calls on each record as a lagged feature
+# (This was partially achieved by merging, but let's ensure we have a separate explicit column.)
+monday_stats = monday_df[['Week_Start', 'Missed_Calls']].rename(columns={'Missed_Calls': 'Monday_MissedCalls'})
+df = df.merge(monday_stats, on='Week_Start', how='left')
+df['Monday_MissedCalls'].fillna(0, inplace=True)  # Fill 0 for records where no Monday data (if any)
+
+# Prepare data for regression: use Tuesday–Friday records, with Monday_MissedCalls as predictor
+reg_data = df[df['DayOfWeek'].isin(['Tuesday', 'Wednesday', 'Thursday', 'Friday'])].copy()
+# Ensure DayOfWeek is treated as categorical for regression (with Tuesday as baseline)
+reg_data['DayOfWeek'] = pd.Categorical(reg_data['DayOfWeek'], 
+                                       categories=['Tuesday','Wednesday','Thursday','Friday'], ordered=False)
+
+# Build OLS regression model: predict daily Offered calls using Monday missed calls and day-of-week interactions
+import statsmodels.formula.api as smf
+model = smf.ols('Offered ~ Monday_MissedCalls * C(DayOfWeek)', data=reg_data).fit()
+print(model.summary())
+
+Explanation: We add a Monday_MissedCalls column to every record, which is the missed call count from that week’s Monday (for Tuesday–Friday rows, this is the lagged Monday value; for Monday itself it’s just that day’s missed calls, though we won’t use Monday itself in this regression). We then take reg_data as the Tuesday–Friday subset and set the DayOfWeek as a categorical variable (so the regression can include it properly). Using statsmodels, we specify a formula regressing Offered calls on Monday_MissedCalls, day-of-week, and their interaction (Monday_MissedCalls * C(DayOfWeek)). In this model, Tuesday is the reference category for DayOfWeek. The summary output will show coefficients for Monday_MissedCalls (effect on Tuesday by default) and interaction terms for Wednesday, Thursday, Friday which indicate how the effect differs on those days.
+
+After fitting, we examine the coefficients and p-values:
+
+    A significantly positive coefficient for Monday_MissedCalls suggests that on Tuesdays, a larger Monday backlog is associated with more calls offered (higher volume) on Tuesday.
+
+    Significant interaction terms (e.g., Monday_MissedCalls:DayOfWeek[Wed]) would indicate the effect on Wednesday is different from Tuesday. For instance, if this coefficient is smaller (or negative) and significant, it might mean the carry-over effect drops off by Wednesday. If it’s not significant, it implies a similar effect on Wednesday as Tuesday.
+
+    We also look at the overall model fit (R-squared) to see how much variance in daily call volume is explained by Monday’s backlog plus day-of-week differences.
+
+(Note: We could run similar regressions for other dependent variables, such as Missed_Calls on Tue–Fri or Answer_Rate, to see how Monday’s performance impacts those. The approach would be analogous.)
+6. Visualization of Results
+
+Finally, we generate visualizations to illustrate the findings and support diagnostics:
+6.1 Time Series Trends
+
+To understand the context and frequency of backlog Mondays, we plot time series of Monday performance over 2018–2024:
+
+    Missed Calls on Mondays over time: This line plot shows the number of missed calls each Monday. We can mark the threshold for the top quartile and highlight which Mondays were flagged.
+
+    Answer Rate on Mondays over time: Similarly, a plot of Monday answer rates with the bottom quartile threshold line can highlight low-service Mondays. Flagged Mondays (by either criterion) can be indicated for reference.
+
+import matplotlib.pyplot as plt
+
+# Plot Monday missed calls over time with threshold
+plt.figure(figsize=(10,4))
+plt.plot(monday_df['Day'], monday_df['Missed_Calls'], label='Missed Calls on Monday', marker='o')
+plt.axhline(missed_75th, color='red', linestyle='--', label='75th percentile MissedCalls')
+# Highlight flagged Mondays
+flagged_mondays = monday_df[monday_df['HighMondayFlag']]
+plt.scatter(flagged_mondays['Day'], flagged_mondays['Missed_Calls'], color='red', label='Flagged High Missed Monday')
+plt.title('Monday Missed Calls Over Time (2018–2024)')
+plt.xlabel('Date')
+plt.ylabel('Missed Calls')
+plt.legend()
 plt.show()
 
-# 4.B. Line Plot: Daily Trend of Average Call Volume by High Missed Monday Flag
-day_summary = post_monday.groupby(['Day_of_Week', 'High_Missed_Monday_FF'])['Offered'].mean().reset_index()
-# Reorder days logically
-day_order = ['Tuesday', 'Wednesday', 'Thursday', 'Friday']
-
-plt.figure(figsize=(10, 6))
-line_plot = sns.lineplot(
-    data=day_summary, 
-    x='Day_of_Week', 
-    y='Offered', 
-    hue='High_Missed_Monday_FF', 
-    marker='o',
-    sort=False,
-    hue_order=[0, 1]
-)
-line_plot.set_title('Daily Trend of Average Offered Calls\nby High Missed Monday Flag', fontsize=14)
-line_plot.set_xlabel('Day of Week', fontsize=12)
-line_plot.set_ylabel('Average Offered Calls', fontsize=12)
-plt.xticks(ticks=range(len(day_order)), labels=day_order)
-line_plot.legend(title='High Missed Monday', labels=['Low', 'High'])
-plt.tight_layout()
+# Plot Monday answer rate over time with threshold
+plt.figure(figsize=(10,4))
+plt.plot(monday_df['Day'], monday_df['Answer_Rate'], label='Answer Rate on Monday', marker='o', color='green')
+plt.axhline(answer_rate_25th, color='orange', linestyle='--', label='25th percentile AnswerRate')
+# Highlight flagged Mondays (same points, flagged by either criterion)
+plt.scatter(flagged_mondays['Day'], flagged_mondays['Answer_Rate'], color='red', label='Flagged High Missed Monday')
+plt.title('Monday Answer Rate Over Time (2018–2024)')
+plt.xlabel('Date')
+plt.ylabel('Answer Rate')
+plt.legend()
 plt.show()
 
-# -------------------------------
-# 5. Comprehensive Regression Analysis
-# -------------------------------
-# Build a regression model to predict Offered calls on a given day
-# Including:
-#   - The effect of a High Missed Monday (forward-filled)
-#   - Day-of-week as categorical variable
-#   - Interaction between High_Missed_Monday_FF and Day_of_Week
-#   - Control for Month (to capture seasonality)
+What to look for: In the first plot, points above the red dashed line (75th percentile of missed calls) indicate unusually high missed-call Mondays. The red scatter points mark flagged Mondays (which should coincide with those above the line or with very low answer rates). We might observe clusters of high missed-call Mondays during certain periods (perhaps seasonal spikes or specific years). The second plot shows Monday answer rates; points below the orange dashed line are in the bottom quartile. Ideally, many flagged Mondays will show up either as high missed or low answer rate points on these charts, confirming our flagging logic.
+6.2 Boxplots: Post-Monday Performance Comparison
 
-# We use C(Day_of_Week) to treat day-of-week as categorical
-formula = 'Offered ~ High_Missed_Monday_FF + C(Day_of_Week) + High_Missed_Monday_FF:C(Day_of_Week) + C(Month)'
-model = smf.ols(formula, data=post_monday)
-results = model.fit()
-print(results.summary())
+We use boxplots to visualize differences in Tuesday–Friday metrics between weeks with a high-backlog Monday and those without:
 
-# -------------------------------
-# 6. Interpreting Effect Sizes & Significance
-# -------------------------------
-# After running the regression, key elements to look at:
-# - The coefficient for High_Missed_Monday_FF: Indicates the overall shift in Offered calls in weeks with a high missed Monday.
-# - Interaction terms (High_Missed_Monday_FF:C(Day_of_Week)[T.<day>]): These show how the effect of a High Missed Monday varies by day.
-# - p-values: Check if these coefficients are statistically significant (typically p < 0.05).
-# - R-squared: Provides an idea of how much variance in Offered calls is explained by the model.
-#
-# For example:
-#   - A positive, significant coefficient on the interaction term for Tuesday suggests that on Tuesdays, having a high missed Monday
-#     is associated with an increase in call volume beyond the baseline.
-#   - The magnitude (effect size) tells you by how many calls the volume changes on average.
-#
-# You can further refine the model by adding more control variables (e.g., special events, promotions) if available.
+import seaborn as sns
 
+# Boxplot of Offered calls on Tue-Fri, comparing weeks with vs. without a High Missed Call Monday
+plt.figure(figsize=(8,5))
+sns.boxplot(x='DayOfWeek', y='Offered', hue='HighMondayFlag', data=post_monday_df)
+plt.title('Offered Calls Tue–Fri: Weeks with High Missed Call Monday vs Normal Monday')
+plt.xlabel('Day of Week')
+plt.ylabel('Daily Offered Calls')
+plt.legend(title='High Missed Call Monday', loc='upper right')
+plt.show()
+
+In the boxplot above, each day Tuesday through Friday has two distributions: one for days following a flagged Monday (perhaps colored differently via the hue) and one for days following a normal Monday. We can visually assess:
+
+    Median and spread: Does the median line for, say, Tuesday (when Monday was high-backlog) sit higher than the median for Tuesday after normal Monday? A higher median for the flagged group would support the idea that Tuesday volume is higher after an overloaded Monday.
+
+    Overlap: If the boxes for two groups on a given day barely overlap, it indicates a large difference in distribution (which aligns with a significant difference).
+
+    We might observe, for example, a noticeable gap on Tuesday (indicating a Tuesday spike after a bad Monday), which could taper off by Thursday/Friday (boxes converging).
+
+(We could create similar boxplots for other metrics like Answer_Rate or Missed_Calls on Tue–Fri. The procedure is the same: set y= to the metric of interest.)
+6.3 Regression Diagnostics
+
+To validate our regression model and assumptions, we plot diagnostic charts:
+
+    Residuals vs. Fitted: Check for any patterns or heteroscedasticity in residuals. Ideally, residuals should be randomly scattered around 0 (horizontal line) with no clear pattern.
+
+    Q-Q Plot: Check if residuals follow a normal distribution (points should lie roughly on the 45° line).
+
+# Residuals vs Fitted values
+residuals = model.resid
+fitted = model.fittedvalues
+plt.figure(figsize=(6,4))
+plt.axhline(0, color='red', linestyle='--')
+plt.scatter(fitted, residuals, alpha=0.7)
+plt.title('Residuals vs Fitted')
+plt.xlabel('Fitted values (Predicted Offered calls)')
+plt.ylabel('Residuals')
+plt.show()
+
+# Q-Q plot for residual normality
+sm = __import__('statsmodels.api', globals(), locals(), ['qqplot'], 0)  # import statsmodels.api as sm
+sm.qqplot(residuals, line='45', fit=True)
+plt.title('Q-Q Plot of Regression Residuals')
+plt.show()
+
+Explanation: The residuals-fitted scatter plot helps verify homoscedasticity (constant variance of errors) and that the linear model form is appropriate. We look for a random cloud of points. Any obvious structure (like a curve or funnel shape) would suggest model issues (e.g., missing nonlinear terms or non-constant variance). The Q-Q plot compares residual quantiles to a normal distribution – roughly linear alignment means the residuals are approximately normally distributed, supporting the validity of t-tests and confidence intervals in the model. If we see heavy tails or outliers (points deviating from the line), we might need to investigate those data points or consider transformations.
+
+Finally, based on all analyses, we would summarize findings. For example, we might conclude that “High Missed Call Mondays (top 25% missed or low answer rate) tend to be followed by significantly higher call volume on Tuesday (p < 0.01), with about a 10% increase in offered calls on average. The effect diminishes by Wednesday and is mostly gone by Thursday, as indicated by the non-significant interaction terms for Thu/Fri in the regression. This suggests that backlogged calls largely materialize the next day. Service metrics (answer rate) on Tuesday also dip slightly after a bad Monday, though differences even out by mid-week.” Such interpretations would be supported by the numbers and visualizations produced by the code above.
