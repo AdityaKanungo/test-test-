@@ -1,216 +1,65 @@
-1. Overview
-
-You have daily call metrics from the Genesis platform with the following key metrics:
-
-    Entered, Offered, Distributed, Accepted: Representing call volumes at different stages.
-
-    Various wait and handle time metrics: Such as average distribute time, average accept time, and more.
-
-    Abandonment categories: Such as Short_Abandoned_waiting and Standard_abandoned_waiting.
-
-Your analysis goal is to understand if days with high missed calls (calls not answered at 8 AM) have subsequent effects on:
-
-    Offered call volumes in later hours
-
-    Answer rate performance over the rest of the day
-
-The idea is to first identify days with unusually high missed calls at 8 AM, then compare subsequent hours (e.g., 9–14 AM/PM) on these “high missed call” days versus “normal” days. Finally, you will quantify the impact via visualizations, statistical tests, and predictive modeling.
-2. Data Preprocessing
-
-Before starting the analysis, you need to ensure that your data is clean and structured. A typical preprocessing workflow might involve:
-
-    Parsing Dates and Hours: Convert the “Day” column into a datetime object and ensure that the “hour” is in a consistent format (e.g., 8, 9, …, 14).
-
-    Handling Missing Values: Decide on an imputation strategy or filter out rows with missing values.
-
-    Deriving Additional Metrics:
-    For example, if “Answer_Rate” is provided as Accepted/Offered, you might also want to compute the absolute number of missed calls as:
-
-    df['Missed'] = df['Offered'] - df['Accepted']
-
-    Aggregating Data by Hour and Day: You might have one record per day per hour. Ensure that you have a multi-index (day, hour) for easy slicing.
-
-3. Identifying High Missed Call Days at 8 AM
-a. Define “High” Missed Calls
-
-One common approach is to set a threshold based on a statistical measure:
-
-    Quantile Threshold: For example, days where the 8 AM missed call count is above the 75th percentile.
-
-    Standard Deviation: Mark days where 8 AM missed calls are more than one or two standard deviations above the mean.
-
-Here’s a sample snippet using pandas:
-
 import pandas as pd
-
-# Assuming df is your DataFrame with a 'Day', 'hour', and 'Missed' column
-# Convert Day to datetime
-df['Day'] = pd.to_datetime(df['Day'])
-# Filter data for 8AM
-df_8am = df[df['hour'] == 8]
-
-# Calculate threshold (for example, 75th percentile)
-threshold = df_8am['Missed'].quantile(0.75)
-
-# Identify high missed call days at 8AM
-high_missed_days = df_8am[df_8am['Missed'] > threshold]['Day'].unique()
-
-print("High missed call days (8AM):", high_missed_days)
-
-4. Exploratory Data Analysis (EDA) & Visualizations
-a. Compare Metrics Across the Day
-
-For the days identified as “high missed call” days, compare the following metrics in the subsequent hours:
-
-    Offered call volumes
-
-    Answer rate (which you might re-calculate if needed as Accepted / Offered)
-
-You can group your data by hour and day, then compute the mean or median metrics for high missed call days versus the rest.
-b. Plot Time Series and Box Plots
-
-Visualizations can help reveal patterns:
-
-    Line Plots: Show the hourly trends for Offered calls and Answer Rate. Overlay the average curves for high missed days and normal days.
-
-    Box Plots: Compare distributions of the metrics (offered calls, answer rate) across hours for the two groups.
-
-Example code using matplotlib:
-
-import matplotlib.pyplot as plt
-
-# Create a flag in the original DataFrame for high missed call days
-df['High_Missed'] = df['Day'].isin(high_missed_days)
-
-# Pivot data to have hours on the x-axis and metric (e.g., Offered) as y-axis
-avg_offered = df.groupby(['hour', 'High_Missed'])['Offered'].mean().reset_index()
-
-# Plot line plot for Offered calls
-plt.figure(figsize=(10,6))
-for label, grp in avg_offered.groupby('High_Missed'):
-    label_str = 'High 8AM Missed' if label else 'Normal 8AM'
-    plt.plot(grp['hour'], grp['Offered'], marker='o', label=label_str)
-
-plt.xlabel('Hour of Day')
-plt.ylabel('Average Offered Calls')
-plt.title('Hourly Offered Calls for High vs Normal 8AM Missed Days')
-plt.legend()
-plt.grid(True)
-plt.show()
-
-You would follow a similar approach for the Answer Rate.
-c. Correlation Analysis
-
-Examine correlations between the 8 AM missed calls and later metrics. A heatmap of the correlation matrix for the selected features could be very illustrative.
-5. Statistical Testing
-
-To quantify the impact of high 8 AM missed calls on later hours, consider the following tests:
-
-    T-test/ANOVA: Compare the means of Offered calls and Answer Rate between high missed call days and normal days. For instance, a two-sample t-test to see if the means differ significantly.
-
-    Non-parametric Tests: If the data are not normally distributed, consider a Mann-Whitney U test.
-
-Example using scipy for a t-test:
-
 from scipy import stats
 
-# Filter data for a particular hour, e.g., 9 AM
-hour_9_data = df[df['hour'] == 9]
-high_9 = hour_9_data[hour_9_data['High_Missed']]['Offered']
-normal_9 = hour_9_data[~hour_9_data['High_Missed']]['Offered']
+# Assume df is your DataFrame with the following columns:
+# 'Day' (string/datetime), 'hour' (numeric, e.g., 8, 9, ..., 14),
+# 'Missed' (number of missed calls), and 'Offered' (number of offered calls).
 
-t_stat, p_val = stats.ttest_ind(high_9, normal_9, nan_policy='omit')
-print("T-test for Offered calls at 9AM: t-statistic =", t_stat, "p-value =", p_val)
+# Ensure 'Day' is a datetime object
+df['Day'] = pd.to_datetime(df['Day'])
 
-Repeat similar tests for other hours and for the Answer Rate.
-6. Modeling the Impact
-Option A: Regression Analysis
+# 1. Identify the low and normal 8AM missed days
 
-A regression model can help quantify the relationship between the 8 AM missed call volume and the subsequent hours’ metrics.
+# Filter the data for 8AM only to calculate thresholds
+df_8am = df[df['hour'] == 8]
 
-Steps:
+# Calculate the 25th and 75th percentiles for the 8AM 'Missed' metric
+low_threshold = df_8am['Missed'].quantile(0.25)
+upper_threshold = df_8am['Missed'].quantile(0.75)
 
-    Feature Engineering:
+# Identify days that qualify as "low" and "normal" based on 8AM missed calls
+low_days = df_8am[df_8am['Missed'] < low_threshold]['Day'].unique()
+normal_days = df_8am[(df_8am['Missed'] >= low_threshold) & (df_8am['Missed'] <= upper_threshold)]['Day'].unique()
 
-        Create a variable that captures the 8 AM missed calls per day.
+print("Low 8AM missed days:", low_days)
+print("Normal 8AM missed days:", normal_days)
 
-        Merge this information with the hourly data (e.g., assign the 8 AM missed call count to all records for that day).
+# 2. Compute the average Offered calls for the rest of the day (hours > 8) per day
 
-    Model Specification:
+# Filter the data for hours after 8AM
+df_rest_of_day = df[df['hour'] > 8]
 
-        Use a linear regression model where the dependent variable is, for example, Offered calls (or Answer Rate) at hour hh and the independent variable is the 8 AM missed call volume (plus possibly other control variables such as day-of-week).
+# Group by day and calculate the average Offered calls for the rest of the day
+avg_offered_by_day = df_rest_of_day.groupby('Day')['Offered'].mean().reset_index()
+avg_offered_by_day.rename(columns={'Offered': 'Avg_Offered_RestOfDay'}, inplace=True)
 
-    Interpretation:
+# 3. Merge the daily average with the classification of days based on 8AM missed calls
 
-        The regression coefficient for the 8 AM missed calls will indicate the change in Offered calls (or Answer Rate) in later hours per additional missed call at 8 AM.
+# Create a DataFrame for the 8AM classification
+df_8am_class = df_8am[['Day', 'Missed']].copy()
 
-Example with statsmodels:
+# Define a new column for classification: 'Low' for low days, 'Normal' for normal days.
+# You can optionally add another group for high days if needed.
+def classify_day(missed, low_th, up_th):
+    if missed < low_th:
+        return 'Low'
+    elif missed <= up_th:
+        return 'Normal'
+    else:
+        return 'High'
 
-import statsmodels.api as sm
+df_8am_class['Group'] = df_8am_class['Missed'].apply(lambda x: classify_day(x, low_threshold, upper_threshold))
 
-# Assume df_daily contains the 8AM missed calls aggregated per day
-# and df_hourly contains hourly data for later hours (9-14)
-# First, merge the 8AM missed calls info with the hourly data
-df_8am_missed = df[df['hour'] == 8][['Day', 'Missed']].rename(columns={'Missed': 'Missed_8AM'})
-df_hourly = df[df['hour'] > 8].merge(df_8am_missed, on='Day', how='left')
+# Merge the classification with the daily averages for the rest of the day
+df_daily = pd.merge(avg_offered_by_day, df_8am_class[['Day', 'Group']], on='Day', how='inner')
 
-# Define independent variable (add constant) and dependent variable (e.g., Offered calls)
-X = sm.add_constant(df_hourly['Missed_8AM'])
-y = df_hourly['Offered']
+# 4. Extract the average Offered calls for the two groups (low vs normal)
+offered_low = df_daily[df_daily['Group'] == 'Low']['Avg_Offered_RestOfDay']
+offered_normal = df_daily[df_daily['Group'] == 'Normal']['Avg_Offered_RestOfDay']
 
-model = sm.OLS(y, X).fit()
-print(model.summary())
+# 5. Perform the two-sample t-test
+t_stat, p_value = stats.ttest_ind(offered_low, offered_normal, nan_policy='omit')
 
-Option B: ARIMA or Time Series Analysis
-
-If you have a strong time series structure (e.g., hourly observations over many days) and the data are autocorrelated, an ARIMA (or SARIMAX) model might be suitable:
-
-    Stationarity Check: Use an ADF test to check if the time series is stationary. If not, difference the series.
-
-    Model Specification:
-
-        You might set up a model where the dependent variable is the offered calls or answer rate for a given hour and include a regressor for the previous hour’s metrics as well as the 8 AM missed call variable.
-
-    Forecast and Interpret:
-
-        Quantify the lag effect and determine how much the early spike (at 8 AM) impacts subsequent hours.
-
-A simplified ARIMA example (assuming your series is already stationary):
-
-from statsmodels.tsa.arima.model import ARIMA
-
-# For simplicity, assume we are modeling Offered calls for 9 AM over days
-df_9am = df[df['hour'] == 9].set_index('Day').sort_index()
-
-# Include the 8AM missed calls as an exogenous variable
-exog = df_8am_missed.set_index('Day')
-
-# Ensure the series are aligned in time
-model_arima = ARIMA(df_9am['Offered'], exog=exog['Missed_8AM'], order=(1,0,1)).fit()
-print(model_arima.summary())
-
-Note: The actual order (p, d, q) should be determined based on ACF/PACF plots and model diagnostics.
-7. Client Summary
-
-When writing your client summary, consider the following structure:
-
-    Introduction: Briefly explain the purpose of the analysis and the key hypothesis (i.e., whether high missed calls at 8 AM have a spillover effect).
-
-    Methodology: Summarize the data cleaning, filtering of high missed call days, and the analytical techniques (visualization, statistical tests, regression/ARIMA modeling).
-
-    Key Findings:
-
-        Visual Evidence: Present line charts and box plots showing differences in offered call volume and answer rate across hours between high and normal days.
-
-        Statistical Significance: Report p-values from your t-tests or non-parametric tests that indicate whether the differences are statistically significant.
-
-        Quantitative Impact: Use regression or time series modeling results to state, for instance, “an increase of X missed calls at 8 AM is associated with a Y% decrease in offered calls at 9 AM.”
-
-    Recommendations:
-
-        Consider operational changes to manage 8 AM call spikes.
-
-        Explore strategies for redistributing call volume or bolstering staffing during critical hours.
-
-    Next Steps: Propose further monitoring or deeper segmentation (e.g., by day-of-week) to refine insights.
-
+print(f"T-test for average Offered calls (rest of day) between low and normal 8AM missed days:")
+print(f"T-statistic: {t_stat}")
+print(f"P-value: {p_value}")
