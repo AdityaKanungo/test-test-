@@ -1,0 +1,130 @@
+import pandas as pd
+import matplotlib.pyplot as plt
+from statsmodels.formula.api import ols
+from scipy.stats import ttest_ind
+
+# =============================================================================
+# 1. Sample Data Setup
+# =============================================================================
+
+# Create a sample dataset with two days and hourly data from 8 to 14.
+data = {
+    'Day': ['2018-01-16'] * 7 + ['2018-01-17'] * 7,
+    'hour': [8, 9, 10, 11, 12, 13, 14] * 2,
+    'Entered': [100, 120, 110, 115, 130, 125, 140, 105, 115, 112, 118, 135, 130, 145],
+    'Accepted': [90, 100, 95, 98, 105, 102, 110, 95, 105, 100, 102, 110, 108, 115],
+    # Outage columns: 1 indicates an outage event during that hour.
+    'power_outage': [0, 0, 1, 0, 0, 0, 0,    0, 0, 0, 1, 0, 0, 0],
+    'website_down': [0, 0, 0, 0, 0, 0, 0,     0, 0, 0, 0, 0, 0, 0]
+}
+df = pd.DataFrame(data)
+
+# Convert Day column to datetime and sort by Day and hour.
+df['Day'] = pd.to_datetime(df['Day'])
+df = df.sort_values(['Day', 'hour']).reset_index(drop=True)
+
+# Create an overall outage flag: if any outage occurred in a given hour.
+outage_columns = ['power_outage', 'website_down']
+df['any_outage'] = df[outage_columns].max(axis=1)  # 1 if any outage occurred, else 0
+
+# =============================================================================
+# 2. Forward Fill (Future Fill) After an Outage
+# =============================================================================
+
+def future_fill_after_outage(group):
+    """
+    For each day, identify the first hour with an outage, then forward-fill the data
+    for that day from that hour onward. This step can simulate how a backlog might be
+    “carried forward” after an outage.
+    """
+    group = group.sort_values('hour')
+    outage_occurrences = group[group['any_outage'] == 1]
+    if not outage_occurrences.empty:
+        first_outage_index = outage_occurrences.index[0]
+        # Forward-fill all columns from the outage hour onward.
+        group.loc[first_outage_index:] = group.loc[first_outage_index:].fillna(method='ffill')
+    return group
+
+# Apply forward-fill for each day.
+df_filled = df.groupby('Day').apply(future_fill_after_outage).reset_index(drop=True)
+
+# =============================================================================
+# 3. Flag Post-Outage Hours and Compute a Backlog Metric
+# =============================================================================
+
+def flag_post_outage(group):
+    """
+    For each day, flag the outage and all subsequent hours as "post_outage".
+    """
+    group = group.sort_values('hour')
+    outage_indices = group[group['any_outage'] == 1].index
+    if not outage_indices.empty:
+        first_outage_idx = outage_indices[0]
+        group['post_outage'] = 0
+        # Flag the outage hour and every hour after as post-outage.
+        group.loc[first_outage_idx:, 'post_outage'] = 1
+    else:
+        group['post_outage'] = 0
+    return group
+
+df_filled = df_filled.groupby('Day').apply(flag_post_outage).reset_index(drop=True)
+
+# Create a backlog metric: here defined as calls Entered minus calls Accepted.
+df_filled['backlog'] = df_filled['Entered'] - df_filled['Accepted']
+
+print("Data with forward fill, backlog, and post_outage flag:")
+print(df_filled)
+
+# =============================================================================
+# 4. Visualization
+# =============================================================================
+
+# 4a. Average Backlog by Hour (across days)
+avg_backlog = df_filled.groupby('hour')['backlog'].mean().reset_index()
+
+plt.figure(figsize=(10, 6))
+plt.plot(avg_backlog['hour'], avg_backlog['backlog'], marker='o')
+plt.xlabel('Hour of the Day')
+plt.ylabel('Average Backlog (Entered - Accepted)')
+plt.title('Average Backlog by Hour')
+plt.grid(True)
+plt.show()
+
+# 4b. Backlog by Pre-Outage vs. Post-Outage Periods
+plt.figure(figsize=(10, 6))
+colors = {0: 'blue', 1: 'red'}
+for key, grp in df_filled.groupby('post_outage'):
+    label = 'Pre-Outage' if key == 0 else 'Post-Outage'
+    plt.plot(grp['hour'], grp['backlog'], marker='o', linestyle='-', color=colors[key], label=label)
+plt.xlabel('Hour of the Day')
+plt.ylabel('Backlog (Entered - Accepted)')
+plt.title('Backlog by Hour (Pre- vs. Post-Outage)')
+plt.legend()
+plt.grid(True)
+plt.show()
+
+# =============================================================================
+# 5. Statistical Testing
+# =============================================================================
+
+# 5a. t-Test: Compare backlog in pre-outage vs. post-outage hours.
+pre_outage_backlog = df_filled[df_filled['post_outage'] == 0]['backlog']
+post_outage_backlog = df_filled[df_filled['post_outage'] == 1]['backlog']
+
+t_stat, p_value = ttest_ind(pre_outage_backlog, post_outage_backlog, equal_var=False)
+print(f"t-test results: t-statistic = {t_stat:.3f}, p-value = {p_value:.3f}")
+
+# 5b. OLS Regression: Estimate the effect of post_outage and hour on backlog.
+model = ols("backlog ~ post_outage + hour", data=df_filled).fit()
+print(model.summary())
+
+# =============================================================================
+# Interpretation:
+# - The forward-fill (future fill) ensures that after an outage, any missing or affected values
+#   are carried forward.
+# - The visualization helps you inspect the average backlog by hour and whether there is a visible
+#   increase after an outage.
+# - The t-test and OLS model quantify the impact of a post-outage period on the backlog.
+#   A statistically significant coefficient on "post_outage" in the OLS model indicates that the outage
+#   (and its aftereffects) significantly affect the backlog.
+# =============================================================================
