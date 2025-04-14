@@ -1,130 +1,223 @@
 import pandas as pd
+import numpy as np
 import matplotlib.pyplot as plt
-from statsmodels.formula.api import ols
 from scipy.stats import ttest_ind
+import statsmodels.formula.api as smf
 
-# =============================================================================
-# 1. Sample Data Setup
-# =============================================================================
+# -------------------------------
+# Step 1: Data Loading, Filtering, and Initial Exploration
+# -------------------------------
 
-# Create a sample dataset with two days and hourly data from 8 to 14.
-data = {
-    'Day': ['2018-01-16'] * 7 + ['2018-01-17'] * 7,
-    'hour': [8, 9, 10, 11, 12, 13, 14] * 2,
-    'Entered': [100, 120, 110, 115, 130, 125, 140, 105, 115, 112, 118, 135, 130, 145],
-    'Accepted': [90, 100, 95, 98, 105, 102, 110, 95, 105, 100, 102, 110, 108, 115],
-    # Outage columns: 1 indicates an outage event during that hour.
-    'power_outage': [0, 0, 1, 0, 0, 0, 0,    0, 0, 0, 1, 0, 0, 0],
-    'website_down': [0, 0, 0, 0, 0, 0, 0,     0, 0, 0, 0, 0, 0, 0]
-}
-df = pd.DataFrame(data)
+# Load the dataset (adjust file path if needed)
+df = pd.read_excel('Outage_data.xlsx')
 
-# Convert Day column to datetime and sort by Day and hour.
+# Convert 'Day' to datetime and ensure proper data types for Hour
 df['Day'] = pd.to_datetime(df['Day'])
-df = df.sort_values(['Day', 'hour']).reset_index(drop=True)
+df['Hour'] = df['Hour'].astype(int)
 
-# Create an overall outage flag: if any outage occurred in a given hour.
-outage_columns = ['power_outage', 'website_down']
-df['any_outage'] = df[outage_columns].max(axis=1)  # 1 if any outage occurred, else 0
+# Filter to include only Monday-Friday (weekday: 0=Monday, ..., 4=Friday)
+df = df[df['Day'].dt.weekday < 5]
 
-# =============================================================================
-# 2. Forward Fill (Future Fill) After an Outage
-# =============================================================================
+# Filter to include only business hours (8:00 to 16:00)
+df = df[(df['Hour'] >= 8) & (df['Hour'] <= 16)]
 
-def future_fill_after_outage(group):
-    """
-    For each day, identify the first hour with an outage, then forward-fill the data
-    for that day from that hour onward. This step can simulate how a backlog might be
-    “carried forward” after an outage.
-    """
-    group = group.sort_values('hour')
-    outage_occurrences = group[group['any_outage'] == 1]
-    if not outage_occurrences.empty:
-        first_outage_index = outage_occurrences.index[0]
-        # Forward-fill all columns from the outage hour onward.
-        group.loc[first_outage_index:] = group.loc[first_outage_index:].fillna(method='ffill')
-    return group
+print("Filtered Data Head:")
+print(df.head())
+print("\nData Info:")
+print(df.info())
 
-# Apply forward-fill for each day.
-df_filled = df.groupby('Day').apply(future_fill_after_outage).reset_index(drop=True)
+# -------------------------------
+# Step 2: Identifying Outage Events
+# -------------------------------
 
-# =============================================================================
-# 3. Flag Post-Outage Hours and Compute a Backlog Metric
-# =============================================================================
+# Assume the 'Outage' column flags an outage (1 = outage, 0 = normal operation)
+df['Outage_Flag'] = df['Outage'] == 1
 
-def flag_post_outage(group):
-    """
-    For each day, flag the outage and all subsequent hours as "post_outage".
-    """
-    group = group.sort_values('hour')
-    outage_indices = group[group['any_outage'] == 1].index
-    if not outage_indices.empty:
-        first_outage_idx = outage_indices[0]
-        group['post_outage'] = 0
-        # Flag the outage hour and every hour after as post-outage.
-        group.loc[first_outage_idx:, 'post_outage'] = 1
-    else:
-        group['post_outage'] = 0
-    return group
+# For each day, determine the first hour of outage (if any)
+outage_events = (
+    df[df['Outage_Flag']]
+    .groupby('Day')['Hour']
+    .min()
+    .reset_index()
+    .rename(columns={'Hour': 'Outage_Start_Hour'})
+)
+print("\nOutage Events by Day:")
+print(outage_events)
 
-df_filled = df_filled.groupby('Day').apply(flag_post_outage).reset_index(drop=True)
+# Merge outage start hour information back into the main dataframe
+df = pd.merge(df, outage_events, on='Day', how='left')
 
-# Create a backlog metric: here defined as calls Entered minus calls Accepted.
-df_filled['backlog'] = df_filled['Entered'] - df_filled['Accepted']
+# -------------------------------
+# Step 3: Creating Post-Outage Windows
+# -------------------------------
 
-print("Data with forward fill, backlog, and post_outage flag:")
-print(df_filled)
+# Define how many hours after the outage to analyze (e.g., next 3 hours)
+post_outage_hours = 3
 
-# =============================================================================
-# 4. Visualization
-# =============================================================================
+# Create a flag for rows falling in the post-outage window:
+# Only if the day had an outage; the condition is that the current Hour is 
+# strictly greater than the outage start hour and within the specified window.
+df['Post_Outage'] = (
+    df['Outage_Start_Hour'].notnull() &
+    (df['Hour'] > df['Outage_Start_Hour']) &
+    (df['Hour'] <= df['Outage_Start_Hour'] + post_outage_hours)
+)
 
-# 4a. Average Backlog by Hour (across days)
-avg_backlog = df_filled.groupby('hour')['backlog'].mean().reset_index()
+# For days with no outage, fill outage start hour with a placeholder (optional)
+df['Outage_Start_Hour'] = df['Outage_Start_Hour'].fillna(-1)
+print("\nSample Data with Post-Outage Flag:")
+print(df.head(10))
 
+# -------------------------------
+# Step 4: Quantifying Impact: Baseline vs. Post-Outage
+# -------------------------------
+
+# Key metrics to analyze (adjust names as in your dataset)
+metrics = ['Call Volume', 'Missed calls', 'Answer Rate', 'Calls per agent']
+
+# For baseline, calculate average metrics (by hour) from days with no outage
+baseline_df = df[~df['Outage_Flag']].groupby('Hour')[metrics].mean().reset_index()
+baseline_df = baseline_df.rename(columns={
+    'Call Volume': 'Baseline_Call_Volume',
+    'Missed calls': 'Baseline_Missed_Calls',
+    'Answer Rate': 'Baseline_Answer_Rate',
+    'Calls per agent': 'Baseline_Calls_per_Agent'
+})
+print("\nBaseline Metrics by Hour:")
+print(baseline_df.head())
+
+# Merge baseline metrics back to main dataframe by Hour for comparison
+df = pd.merge(df, baseline_df, on='Hour', how='left')
+
+# Calculate percentage change metrics in the post-outage window:
+# - Backlog percentage: additional missed calls as a percentage of call volume
+# - Answer Rate drop percentage
+# - Increase in Calls per Agent percentage
+df['Missed_Calls_Backlog_%'] = np.where(
+    df['Post_Outage'],
+    ((df['Missed calls'] - df['Baseline_Missed_Calls']) / df['Baseline_Call_Volume']) * 100,
+    np.nan
+)
+
+df['Answer_Rate_Drop_%'] = np.where(
+    df['Post_Outage'],
+    ((df['Baseline_Answer_Rate'] - df['Answer Rate']) / df['Baseline_Answer_Rate']) * 100,
+    np.nan
+)
+
+df['Calls_per_Agent_Increase_%'] = np.where(
+    df['Post_Outage'],
+    ((df['Calls per agent'] - df['Baseline_Calls_per_Agent']) / df['Baseline_Calls_per_Agent']) * 100,
+    np.nan
+)
+
+print("\nPost-Outage Metrics Sample:")
+print(df[df['Post_Outage']].head())
+
+# -------------------------------
+# Step 5: Visualization
+# -------------------------------
+
+# Choose an example day with an outage for visualization (first outage day)
+if not outage_events.empty:
+    example_day = outage_events.iloc[0]['Day']
+    day_data = df[df['Day'] == example_day]
+else:
+    example_day = df['Day'].iloc[0]
+    day_data = df[df['Day'] == example_day]
+
+# 1. Time Series Plot: Call Volume with Outage and Post-Outage Window
 plt.figure(figsize=(10, 6))
-plt.plot(avg_backlog['hour'], avg_backlog['backlog'], marker='o')
-plt.xlabel('Hour of the Day')
-plt.ylabel('Average Backlog (Entered - Accepted)')
-plt.title('Average Backlog by Hour')
-plt.grid(True)
-plt.show()
-
-# 4b. Backlog by Pre-Outage vs. Post-Outage Periods
-plt.figure(figsize=(10, 6))
-colors = {0: 'blue', 1: 'red'}
-for key, grp in df_filled.groupby('post_outage'):
-    label = 'Pre-Outage' if key == 0 else 'Post-Outage'
-    plt.plot(grp['hour'], grp['backlog'], marker='o', linestyle='-', color=colors[key], label=label)
-plt.xlabel('Hour of the Day')
-plt.ylabel('Backlog (Entered - Accepted)')
-plt.title('Backlog by Hour (Pre- vs. Post-Outage)')
+plt.plot(day_data['Hour'], day_data['Call Volume'], marker='o', label='Call Volume')
+if day_data['Outage_Flag'].any():
+    outage_hour = day_data[day_data['Outage_Flag']]['Hour'].min()
+    plt.axvline(x=outage_hour, color='red', linestyle='--', label='Outage Start')
+    # Shade post-outage window
+    plt.fill_between(day_data['Hour'],
+                     day_data['Call Volume'].min(),
+                     day_data['Call Volume'].max(),
+                     where=((day_data['Hour'] > outage_hour) & (day_data['Hour'] <= outage_hour + post_outage_hours)),
+                     color='gray', alpha=0.3, label='Post-Outage Window')
+plt.xlabel('Hour')
+plt.ylabel('Call Volume')
+plt.title(f'Call Volume on {example_day.date()} (Outage Analysis)')
 plt.legend()
-plt.grid(True)
 plt.show()
 
-# =============================================================================
-# 5. Statistical Testing
-# =============================================================================
+# 2. Bar Plot: Missed Calls Backlog Percentage in Post-Outage Window
+post_outage_data = day_data[day_data['Post_Outage']]
+plt.figure(figsize=(8, 5))
+plt.bar(post_outage_data['Hour'], post_outage_data['Missed_Calls_Backlog_%'])
+plt.xlabel('Hour')
+plt.ylabel('Missed Calls Backlog (%)')
+plt.title(f'Missed Calls Backlog (%) in Post-Outage (Day: {example_day.date()})')
+plt.show()
 
-# 5a. t-Test: Compare backlog in pre-outage vs. post-outage hours.
-pre_outage_backlog = df_filled[df_filled['post_outage'] == 0]['backlog']
-post_outage_backlog = df_filled[df_filled['post_outage'] == 1]['backlog']
+# 3. Bar Plot: Answer Rate Drop Percentage in Post-Outage Window
+plt.figure(figsize=(8, 5))
+plt.bar(post_outage_data['Hour'], post_outage_data['Answer_Rate_Drop_%'])
+plt.xlabel('Hour')
+plt.ylabel('Answer Rate Drop (%)')
+plt.title(f'Answer Rate Drop in Post-Outage (Day: {example_day.date()})')
+plt.show()
 
-t_stat, p_value = ttest_ind(pre_outage_backlog, post_outage_backlog, equal_var=False)
-print(f"t-test results: t-statistic = {t_stat:.3f}, p-value = {p_value:.3f}")
+# 4. Bar Plot: Increase in Calls per Agent Percentage in Post-Outage Window
+plt.figure(figsize=(8, 5))
+plt.bar(post_outage_data['Hour'], post_outage_data['Calls_per_Agent_Increase_%'])
+plt.xlabel('Hour')
+plt.ylabel('Calls per Agent Increase (%)')
+plt.title(f'Calls per Agent Increase in Post-Outage (Day: {example_day.date()})')
+plt.show()
 
-# 5b. OLS Regression: Estimate the effect of post_outage and hour on backlog.
-model = ols("backlog ~ post_outage + hour", data=df_filled).fit()
-print(model.summary())
+# 5. Comparative Time Series: Average Call Volume on Outage vs. Non-Outage Days
+avg_outage = df[df['Outage_Flag']].groupby('Hour')['Call Volume'].mean().reset_index()
+avg_non_outage = df[~df['Outage_Flag']].groupby('Hour')['Call Volume'].mean().reset_index()
 
-# =============================================================================
-# Interpretation:
-# - The forward-fill (future fill) ensures that after an outage, any missing or affected values
-#   are carried forward.
-# - The visualization helps you inspect the average backlog by hour and whether there is a visible
-#   increase after an outage.
-# - The t-test and OLS model quantify the impact of a post-outage period on the backlog.
-#   A statistically significant coefficient on "post_outage" in the OLS model indicates that the outage
-#   (and its aftereffects) significantly affect the backlog.
-# =============================================================================
+plt.figure(figsize=(10, 6))
+plt.plot(avg_outage['Hour'], avg_outage['Call Volume'], marker='o', label='Outage Days')
+plt.plot(avg_non_outage['Hour'], avg_non_outage['Call Volume'], marker='x', label='Non-Outage Days')
+plt.xlabel('Hour')
+plt.ylabel('Average Call Volume')
+plt.title('Comparison of Average Call Volume: Outage vs Non-Outage Days')
+plt.legend()
+plt.show()
+
+# -------------------------------
+# Step 6: Statistical Significance Testing
+# -------------------------------
+
+# For each metric, compare post-outage vs. baseline (from non-outage days) using t-tests.
+post_hours = df.loc[df['Post_Outage'], 'Hour'].unique()
+
+def run_ttest(metric, label):
+    post_metric = df[(df['Post_Outage']) & (df['Hour'].isin(post_hours))][metric]
+    baseline_metric = df[(~df['Outage_Flag']) & (df['Hour'].isin(post_hours))][metric]
+    t_stat, p_val = ttest_ind(post_metric, baseline_metric, nan_policy='omit')
+    print(f"\nT-test for {label}:")
+    print("  T-statistic:", t_stat)
+    print("  P-value:", p_val)
+    if p_val < 0.05:
+        print("  => Statistically significant difference.")
+    else:
+        print("  => No statistically significant difference.")
+        
+# Run t-tests for key metrics
+run_ttest('Missed calls', 'Missed Calls (absolute)')
+run_ttest('Call Volume', 'Call Volume')
+run_ttest('Answer Rate', 'Answer Rate')
+run_ttest('Calls per agent', 'Calls per Agent')
+
+# -------------------------------
+# Step 7: OLS Regression Analysis
+# -------------------------------
+
+# Create an indicator variable for rows in the post-outage window
+df['Is_Post_Outage'] = df['Post_Outage'].astype(int)
+
+# Example OLS model: How does being in the post-outage period affect Answer Rate (controlling for Hour)
+model_formula = 'Q("Answer Rate") ~ Is_Post_Outage + Hour'
+ols_model = smf.ols(formula=model_formula, data=df).fit()
+print("\nOLS Regression Results for Answer Rate:")
+print(ols_model.summary())
+
+# You can run similar OLS regressions for other metrics (e.g., 'Missed calls', 'Calls per agent') as needed.
