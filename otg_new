@@ -1,0 +1,167 @@
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.stats import ttest_ind
+import statsmodels.formula.api as smf
+import statsmodels.api as sm
+
+# Load data
+df = pd.read_excel("Hourly - Master_Data.xlsx")
+
+# Preprocessing
+df['Day'] = pd.to_datetime(df['Day'])
+df['Year'] = df['Day'].dt.year
+df = df[(df['Hour'] >= 8) & (df['Hour'] <= 16) & (df['Year'] >= 2022) & (df['Year'] <= 2024)]
+df = df.sort_values(['Day', 'Hour']).reset_index(drop=True)
+
+# Create outage flag
+outage_columns = ['compass', 'ecis accessibility issues', 'ecis application issues', 'ecis down',
+                  'ecis imaging', 'ecis processing', 'ecis server issues', 'ecis slow', 'genesys',
+                  'not_applicable', 'ecis connectivity issues']
+df['Outage'] = df[outage_columns].max(axis=1)
+df['Outage_Flag'] = df['Outage'] == 1
+df['Is_Outage_Hour'] = df['Outage_Flag'].astype(int)
+
+# First hour of outage per day
+outage_events = df[df['Outage_Flag']].groupby('Day')['Hour'].min().reset_index().rename(columns={'Hour': 'Outage_Start_Hour'})
+df = pd.merge(df, outage_events, on='Day', how='left')
+
+# Post-outage flag (legacy logic, keep if needed)
+post_outage_hours = 3
+df['Post_Outage'] = (
+    df['Outage_Start_Hour'].notnull() &
+    (df['Hour'] > df['Outage_Start_Hour']) &
+    (df['Hour'] <= df['Outage_Start_Hour'] + post_outage_hours)
+)
+
+# Derived columns
+df['Missed calls'] = df['Offered'] - df['Accepted']
+df['Calls per agent'] = df['Offered'] / df['Total_Agents_on_Call']
+df['DayOfWeek'] = df['Day'].dt.day_name()
+
+# Initialize clean one-hot post-outage hour flags
+df['Hour_1_After_Outage_Clean'] = 0
+df['Hour_2_After_Outage_Clean'] = 0
+df['Hour_3_After_Outage_Clean'] = 0
+
+# Flag hours 1–3 after outage ONLY if no outage in those hours
+for day in df['Day'].unique():
+    day_df = df[df['Day'] == day]
+    if day_df['Outage_Start_Hour'].notnull().any():
+        outage_start_hour = day_df['Outage_Start_Hour'].dropna().iloc[0]
+        for i in range(1, 4):
+            target_hour = outage_start_hour + i
+            condition = (
+                (df['Day'] == day) &
+                (df['Hour'] == target_hour) &
+                (~df['Outage_Flag'])
+            )
+            df.loc[condition, f'Hour_{i}_After_Outage_Clean'] = 1
+
+# Visualizations
+avg_outage = df[df['Outage_Flag']].groupby('Hour')['Offered'].mean().reset_index()
+avg_non_outage = df[~df['Outage_Flag']].groupby('Hour')['Offered'].mean().reset_index()
+
+avg_outage_ans = df[df['Outage_Flag']].groupby('Hour')['Answer_rate'].mean().reset_index()
+avg_non_outage_ans = df[~df['Outage_Flag']].groupby('Hour')['Answer_rate'].mean().reset_index()
+
+avg_outage_cpa = df[df['Outage_Flag']].groupby('Hour')['Calls per agent'].mean().reset_index()
+avg_non_outage_cpa = df[~df['Outage_Flag']].groupby('Hour')['Calls per agent'].mean().reset_index()
+
+# Plotting Call Volume
+plt.figure(figsize=(10, 6))
+plt.plot(avg_outage['Hour'], avg_outage['Offered'], marker='o', label='Outage Days')
+plt.plot(avg_non_outage['Hour'], avg_non_outage['Offered'], marker='x', label='Non-Outage Days')
+plt.xlabel('Hour')
+plt.ylabel('Average Call Volume')
+plt.title('Average Call Volume: Outage vs Non-Outage Days')
+plt.legend()
+plt.show()
+
+# T-tests
+post_hours = df.loc[df['Post_Outage'], 'Hour'].unique()
+
+def run_ttest(metric, label):
+    post_metric = df[df['Post_Outage'] & df['Hour'].isin(post_hours)][metric]
+    baseline_metric = df[~df['Outage_Flag'] & df['Hour'].isin(post_hours)][metric]
+    t_stat, p_val = ttest_ind(post_metric, baseline_metric, nan_policy='omit')
+    print(f"\nT-test for {label}:")
+    print("  T-statistic:", t_stat)
+    print("  P-value:", p_val)
+    if p_val < 0.05:
+        print("  => Statistically significant difference.")
+    else:
+        print("  => No statistically significant difference.")
+
+# Run t-tests
+run_ttest('Missed calls', 'Missed Calls (absolute)')
+run_ttest('Offered', 'Offered')
+run_ttest('Answer_rate', 'Answer Rate')
+run_ttest('Calls per agent', 'Calls per Agent')
+
+# Regression using clean hour-after flags
+reg_df_clean = df.dropna(subset=['Wait Time'])
+
+model_clean = smf.ols(
+    'Q("Wait Time") ~ Hour_1_After_Outage_Clean + Hour_2_After_Outage_Clean + Hour_3_After_Outage_Clean + C(Hour) + C(DayOfWeek)',
+    data=reg_df_clean
+).fit()
+
+print(model_clean.summary())
+
+
+# Assuming these are your existing binary outage columns
+outage_types = [
+    'compass', 'ecis accessibility issues', 'ecis application issues', 'ecis down',
+    'ecis imaging', 'ecis processing', 'ecis server issues', 'ecis slow', 'genesys',
+    'not_applicable', 'ecis connectivity issues'
+]
+
+# Step 1: Initialize new impact flags
+for outage in outage_types:
+    df[f'{outage}_impact'] = 0
+
+# Step 2: For each day, trace first outage hour and propagate impact if no new outage overlaps
+for day in df['Day'].unique():
+    day_df = df[df['Day'] == day]
+    if day_df['Outage_Start_Hour'].notnull().any():
+        outage_start_hour = day_df['Outage_Start_Hour'].dropna().iloc[0]
+
+        # Identify which outages were active at that hour
+        row = df[(df['Day'] == day) & (df['Hour'] == outage_start_hour)]
+        if row.empty:
+            continue
+
+        for outage in outage_types:
+            if row[outage].values[0] == 1:
+                for i in range(1, 4):
+                    target_hour = outage_start_hour + i
+                    condition = (
+                        (df['Day'] == day) &
+                        (df['Hour'] == target_hour) &
+                        (~df['Outage_Flag'])  # Only count clean post-hours
+                    )
+                    df.loc[condition, f'{outage}_impact'] = 1
+
+
+
+# Regression formula
+impact_vars = [f'{outage}_impact' for outage in outage_types]
+formula = 'Q("Wait Time") ~ ' + ' + '.join(impact_vars) + ' + C(Hour) + C(DayOfWeek)'
+
+# Drop missing Wait Time and fit
+reg_df_by_outage = df.dropna(subset=['Wait Time'])
+
+model_outage_type = smf.ols(formula, data=reg_df_by_outage).fit()
+print(model_outage_type.summary())
+
+
+# Extract coefficients
+impact_coefs = model_outage_type.params[impact_vars].sort_values(ascending=False)
+
+impact_coefs.plot(kind='barh', figsize=(10, 6), title='Impact of Outage Types on Wait Time (Next 3 Hours)')
+plt.xlabel('Estimated Increase in Wait Time')
+plt.tight_layout()
+plt.show()
+
+
