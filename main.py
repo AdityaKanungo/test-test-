@@ -1,22 +1,27 @@
-import pandas as pd
-import numpy as np
+import matplotlib.pyplot as plt
 
-# ---- 1.1  Load & basic cleaning ---------------------------------------------
-df = pd.read_csv("call_center_daily.csv")        # adapt as needed
-df['Day'] = pd.to_datetime(df['Day'])           # ensure true datetimes
-df = df.sort_values('Day').reset_index(drop=True)
+# Add calendar week & weekday labels for plotting convenience
+df['Week']     = df['Day'].dt.isocalendar().week
+df['Weekday']  = df['Day'].dt.day_name()
 
-# ---- 1.2  Forward-fill 3-day post-holiday window ----------------------------
-# Identify index positions where the current row is a holiday
-holiday_idx = df.index[df['holiday_Flag'] == 1]
+metrics = {
+    'Call Volume': 'Offered',
+    'Wait Time'  : 'Avg Wait',
+    'Answer Rate': 'Answer Rate'
+}
 
-# Make helper columns
-df['post_holiday_flag']  = 0          # 1 if in 3-day window
-df['day_after_holiday']  = 0          # 1, 2, 3 for relative day
-
-for idx in holiday_idx:
-    for offset in range(1, 4):        # 1, 2, 3
-        target = idx + offset
-        if target < len(df):
-            df.loc[target, 'post_holiday_flag'] = 1
-            df.loc[target, 'day_after_holiday'] = offset
+for col, title in metrics.items():
+    plt.figure(figsize=(10,4))
+    for label, g in df.groupby('post_holiday_flag'):
+        # 0 = “normal”, 1 = “post-holiday”
+        avg = g.groupby('Weekday')[col].mean().reindex(
+              ['Monday','Tuesday','Wednesday','Thursday','Friday'])
+        style = '-' if label == 0 else '--'
+        plt.plot(avg.values, style, marker='o',
+                 label='Post-holiday' if label else 'Normal')
+    plt.title(f'{title}: Normal vs Post-holiday')
+    plt.ylabel(col)
+    plt.xticks(range(5), ['Mon','Tue','Wed','Thu','Fri'])
+    plt.legend()
+    plt.tight_layout()
+    plt.show()
