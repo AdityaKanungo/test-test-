@@ -1,11 +1,12 @@
-from scipy.stats import ttest_ind
+import statsmodels.formula.api as smf
 
-results = []
-for col in ['Call Volume', 'Wait Time', 'Answer Rate']:
-    post  = df.loc[df['post_holiday_flag']==1, col]
-    base  = df.loc[(df['holiday_Flag']==0) & (df['post_holiday_flag']==0), col]
-    t, p  = ttest_ind(post, base, equal_var=False)  # Welch
-    results.append((col, post.mean(), base.mean(), t, p))
+# Build explicit dummy variables for day 1 / day 2 / day 3
+df = pd.get_dummies(df, columns=['day_after_holiday'], prefix='D', drop_first=False)
 
-print(pd.DataFrame(results, columns=[
-        'Metric', 'Mean (Post-hol)', 'Mean (Normal)', 't-stat', 'p-value']))
+model = smf.ols(
+    "Q('Wait Time') ~ Q('Call Volume') + Q('Agents on call')"
+    " + D_1 + D_2 + D_3",
+    data=df
+).fit(cov_type='HC3')     # robust SEs
+
+print(model.summary().tables[1])
