@@ -1,80 +1,133 @@
+"""
+daily_holiday_impact.py
+-----------------------
+Quantifies how call-centre KPIs behave in the days *after* a holiday,
+using only **daily** data (no Hour column).
+
+Columns required
+    • Day                – date (YYYY-MM-DD)
+    • Call Volume        – int
+    • Wait Time          – float / int
+    • Agents on call     – int
+    • Answer Rate        – float (0-1 or %)
+    • holiday_Flag       – 1 = holiday, 0 = non-holiday
+    • Calls per agent    – float
+"""
+
+# ─────────────────────────────────────────────────────
+# Imports & settings
+# ─────────────────────────────────────────────────────
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
-import matplotlib.dates as mdates
+import statsmodels.formula.api as smf
+from pathlib import Path
 
-# --- Simulate a daily dataset ---
-np.random.seed(42)
-date_range = pd.date_range(start='2022-01-01', end='2024-12-31', freq='D')
-df = pd.DataFrame({
-    'Date': date_range,
-    'Holiday_Flag': np.random.choice([0, 1], size=len(date_range), p=[0.9, 0.1]),
-    'Avg Accept Time': np.random.normal(loc=6, scale=1.5, size=len(date_range)),
-    'Answer Rate': np.random.normal(loc=0.85, scale=0.05, size=len(date_range)),
-    'Offered': np.random.poisson(lam=1500, size=len(date_range))
-})
+plt.rcParams["figure.figsize"] = (11, 6)
+sns.set_style("whitegrid")
 
-# Clip outliers and preprocess
-df['Avg Accept Time'] = df['Avg Accept Time'].clip(2, 15)
-df['Answer Rate'] = df['Answer Rate'].clip(0.5, 1.0)
-df['Holiday_Flag'] = df['Holiday_Flag'].astype(int)
-df['DayOfWeek'] = df['Date'].dt.dayofweek  # Monday=0, Sunday=6
+METRICS = ["Call Volume", "Wait Time", "Answer Rate", "Calls per agent"]
 
-# --- Remove weekends ---
-df = df[df['DayOfWeek'] < 5].copy()
 
-# --- Flag 3 days after each holiday (excluding weekends) ---
-df['Post_Holiday_1'] = 0
-df['Post_Holiday_2'] = 0
-df['Post_Holiday_3'] = 0
+# ─────────────────────────────────────────────────────
+# 0  Load & clean
+# ─────────────────────────────────────────────────────
+def load_data(path: str | Path) -> pd.DataFrame:
+    df = (pd.read_csv(path, parse_dates=["Day"])
+            .sort_values("Day")
+            .reset_index(drop=True))
+    # Basic sanity checks
+    assert {"holiday_Flag"}.issubset(df.columns), "holiday_Flag missing"
+    return df
 
-holiday_dates = df[df['Holiday_Flag'] == 1]['Date']
-for holiday in holiday_dates:
-    post_days = df[df['Date'] > holiday].head(3).index
-    if len(post_days) >= 1:
-        df.loc[post_days[0], 'Post_Holiday_1'] = 1
-    if len(post_days) >= 2:
-        df.loc[post_days[1], 'Post_Holiday_2'] = 1
-    if len(post_days) >= 3:
-        df.loc[post_days[2], 'Post_Holiday_3'] = 1
 
-# --- Year-wise visualization ---
-years = [2022, 2023, 2024]
-for year in years:
-    yearly_df = df[df['Date'].dt.year == year]
-    yearly_melted = yearly_df.melt(
-        id_vars='Date',
-        value_vars=['Avg Accept Time', 'Answer Rate', 'Offered'],
-        var_name='Metric',
-        value_name='Value'
+# ─────────────────────────────────────────────────────
+# 1  Feature engineering
+# ─────────────────────────────────────────────────────
+def add_holiday_features(df: pd.DataFrame) -> pd.DataFrame:
+    df["is_holiday"] = df["holiday_Flag"].astype(int)
+
+    # Group every holiday (or non-holiday stretch) and count days since
+    df["holiday_group"] = df["is_holiday"].cumsum()
+    df["days_since_holiday"] = df.groupby("holiday_group").cumcount()
+
+    # Smooth buckets
+    df["post_holiday_bucket"] = pd.cut(
+        df["days_since_holiday"],
+        bins=[-1, 0, 1, 2, 5, np.inf],
+        labels=["Holiday", "Day 1", "Day 2", "Day 3-5", "Day 6+"],
+        right=True,
     )
-    holiday_dates_year = yearly_df[yearly_df['Holiday_Flag'] == 1]['Date']
-    
-    unique_metrics = yearly_melted['Metric'].unique()
-    fig, axes = plt.subplots(len(unique_metrics), 1, figsize=(15, 10), sharex=True)
 
-    for i, metric in enumerate(unique_metrics):
-        ax = axes[i]
-        metric_df = yearly_melted[yearly_melted['Metric'] == metric]
-        sns.lineplot(data=metric_df, x='Date', y='Value', ax=ax, label=metric)
+    # Weekday factor (controls for normal weekly seasonality)
+    df["weekday"] = df["Day"].dt.day_name()
 
-        # Mark holidays
-        for h in holiday_dates_year:
-            ax.axvline(x=h, color='red', linestyle='--', linewidth=0.8)
+    return df
 
-        # Highlight post-holiday points
-        for day_flag in ['Post_Holiday_1', 'Post_Holiday_2', 'Post_Holiday_3']:
-            post_days = yearly_df[yearly_df[day_flag] == 1]['Date']
-            for pd in post_days:
-                ax.axvline(x=pd, color='orange', linestyle=':', linewidth=0.6)
 
-        ax.set_title(f"{metric} in {year} with Holidays (red) and 3 Post-Holiday Days (orange)")
-        ax.set_ylabel(metric)
-        ax.grid(True)
-
-    axes[-1].xaxis.set_major_locator(mdates.MonthLocator())
-    axes[-1].xaxis.set_major_formatter(mdates.DateFormatter('%b %Y'))
-    plt.xticks(rotation=45)
-    plt.tight_layout()
+# ─────────────────────────────────────────────────────
+# 2  Exploratory event-study plots
+# ─────────────────────────────────────────────────────
+def event_study_plot(df: pd.DataFrame, metric: str) -> None:
+    mean_df = (df.groupby("days_since_holiday")[metric]
+                 .mean()
+                 .reset_index())
+    ax = sns.lineplot(data=mean_df, x="days_since_holiday",
+                      y=metric, marker="o")
+    ax.axhline(df[metric].mean(), ls="--", lw=1, label="Overall mean")
+    ax.set_title(f"{metric} vs. Days Since Holiday")
+    ax.set_xlabel("Days Since Holiday (0 = Holiday)")
+    ax.legend()
     plt.show()
+
+
+# ─────────────────────────────────────────────────────
+# 3  Regression models
+# ─────────────────────────────────────────────────────
+def run_models(df: pd.DataFrame) -> dict:
+    res = {}
+
+    # OLS for Wait Time
+    ols_formula = ("Q('Wait Time') ~ C(post_holiday_bucket)"
+                   " + C(weekday) + Q('Agents on call')"
+                   " + C(post_holiday_bucket):Q('Agents on call')")
+    res["wait_time_ols"] = smf.ols(ols_formula, data=df).fit(cov_type="HC3")
+
+    # Poisson for Call Volume (count)
+    poi_formula = ("Q('Call Volume') ~ C(post_holiday_bucket)"
+                   " + C(weekday) + Q('Agents on call')")
+    res["call_volume_poi"] = smf.glm(
+        poi_formula, data=df,
+        family=smf.families.Poisson()).fit(cov_type="HC3")
+
+    return res
+
+
+def print_summaries(res_dict: dict) -> None:
+    for name, model in res_dict.items():
+        print("\n", "="*80, f"\n{name.upper()}\n", "="*80)
+        print(model.summary())
+
+
+# ─────────────────────────────────────────────────────
+# 4  Driver
+# ─────────────────────────────────────────────────────
+def main(path: str | Path = "calls_daily.csv",
+         make_plots: bool = True,
+         run_reg: bool = True) -> None:
+
+    df = load_data(path)
+    df = add_holiday_features(df)
+
+    if make_plots:
+        for m in METRICS:
+            event_study_plot(df, m)
+
+    if run_reg:
+        results = run_models(df)
+        print_summaries(results)
+
+
+if __name__ == "__main__":
+    main("calls_daily.csv")
