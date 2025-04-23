@@ -1,27 +1,11 @@
-import matplotlib.pyplot as plt
+from scipy.stats import ttest_ind
 
-# Add calendar week & weekday labels for plotting convenience
-df['Week']     = df['Day'].dt.isocalendar().week
-df['Weekday']  = df['Day'].dt.day_name()
+results = []
+for col in ['Call Volume', 'Wait Time', 'Answer Rate']:
+    post  = df.loc[df['post_holiday_flag']==1, col]
+    base  = df.loc[(df['holiday_Flag']==0) & (df['post_holiday_flag']==0), col]
+    t, p  = ttest_ind(post, base, equal_var=False)  # Welch
+    results.append((col, post.mean(), base.mean(), t, p))
 
-metrics = {
-    'Call Volume': 'Offered',
-    'Wait Time'  : 'Avg Wait',
-    'Answer Rate': 'Answer Rate'
-}
-
-for col, title in metrics.items():
-    plt.figure(figsize=(10,4))
-    for label, g in df.groupby('post_holiday_flag'):
-        # 0 = “normal”, 1 = “post-holiday”
-        avg = g.groupby('Weekday')[col].mean().reindex(
-              ['Monday','Tuesday','Wednesday','Thursday','Friday'])
-        style = '-' if label == 0 else '--'
-        plt.plot(avg.values, style, marker='o',
-                 label='Post-holiday' if label else 'Normal')
-    plt.title(f'{title}: Normal vs Post-holiday')
-    plt.ylabel(col)
-    plt.xticks(range(5), ['Mon','Tue','Wed','Thu','Fri'])
-    plt.legend()
-    plt.tight_layout()
-    plt.show()
+print(pd.DataFrame(results, columns=[
+        'Metric', 'Mean (Post-hol)', 'Mean (Normal)', 't-stat', 'p-value']))
