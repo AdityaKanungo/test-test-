@@ -3,33 +3,45 @@ from docx import Document
 
 def _has_tables(self, doc: Document) -> bool:
     """
-    Return True if there is any table in `doc` *other than* one
-    that contains the words 'subject', 'to', and 'from' (in any cells).
-    We'll print out the tokens for each table so you can debug why
-    your header-only table is still getting counted.
+    Return True if there is any table in `doc` *other than* one that:
+      • contains the words 'subject', 'to', and 'from' (in any cells), OR
+      • is composed entirely of date strings.
     """
     header_keywords = {"subject", "to", "from"}
-    # regex finds sequences of letters plus an optional trailing colon
-    pattern = re.compile(r"\b([A-Za-z]+):?\b")
+    # match letter-only tokens (with optional trailing colon)
+    word_pattern = re.compile(r"\b([A-Za-z]+):?\b")
+    # match dates like "MM/DD/YYYY", "M/D/YY", or ISO "YYYY-MM-DD"
+    date_pattern = re.compile(r"^(?:\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}-\d{2}-\d{2})$")
 
-    for idx, table in enumerate(doc.tables):
-        # gather all the raw text
+    for table in doc.tables:
+        # 1) grab all text for header-keyword detection
         combined = " ".join(
             cell.text for row in table.rows for cell in row.cells
-        )
-        # find all “words” (with optional colon), lowercase, strip colon
-        raw = pattern.findall(combined)
-        tokens = {w.lower().rstrip(":") for w in raw}
+        ).lower()
 
-        print(f"\nTable #{idx} raw text:\n{combined!r}")
-        print(f"Table #{idx} tokens: {tokens}")
+        # extract pure-word tokens
+        raw_words = word_pattern.findall(combined)
+        tokens = {w.rstrip(":") for w in raw_words}
 
+        # if it has all header keywords, skip it
         if header_keywords.issubset(tokens):
-            print(f" → Skipping table #{idx} (it has all of {header_keywords})")
             continue
 
-        print(f" → Counting table #{idx} as “real.”")
+        # 2) check for date-only tables
+        #    collect every non-empty cell’s trimmed text
+        cell_texts = [
+            cell.text.strip()
+            for row in table.rows
+            for cell in row.cells
+            if cell.text.strip()
+        ]
+
+        # if there is at least one cell, and *every* cell matches our date regex → skip
+        if cell_texts and all(date_pattern.match(txt) for txt in cell_texts):
+            continue
+
+        # otherwise it’s a “real” table
         return True
 
-    print("No “real” tables found.")
+    # no real tables found
     return False
