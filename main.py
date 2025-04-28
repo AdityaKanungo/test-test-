@@ -1,68 +1,131 @@
-import unittest
-from content_moderation import ContentModeration
+import re
+from pathlib import Path
+from datetime import date
+import pandas as pd
+import pdfplumber
 
-class TestContentModeration(unittest.TestCase):
-    def setUp(self):
-        # instantiate and clear out whitelist so all PERSON ents are caught
-        self.cm = ContentModeration()
-        self.cm.whitelist.clear()
+class PolicyTextExtractor:
+    # ——— pre-compiled regexes —————————————————————————————————————————————————
+    SUBMISSION_RE = re.compile(r'^\s*submitted.*$', re.IGNORECASE)
+    DATE_PATTERNS = [
+        # e.g. “January 1, 2025”
+        re.compile(
+            r'(?:January|February|March|April|May|June|'
+            r'July|August|September|October|November|December)'
+            r'\s+\d{1,2},\s+\d{4}'
+        ),
+        # e.g. “1/1/2025” or “01/01/25”
+        re.compile(r'\b\d{1,2}/\d{1,2}/\d{2,4}\b'),
+    ]
 
-    def assertPII(self, query, expected):
-        found = set(self.cm.detect_pii(query))
-        self.assertEqual(found, set(expected),
-                         msg=f"\nQuery: {query!r}\nExpected: {expected}\n  Found: {found}")
+    def extract_text_and_tables(self, page) -> str:
+        """
+        Extract text from a pdfplumber page, interleaving any tables
+        wrapped in [TABLE]…[/TABLE], in their vertical order.
+        """
+        text = page.extract_text() or ""
+        tables = sorted(page.find_tables(), key=lambda t: t.bbox[1])
+        out_lines: list[str] = []
+        tbl_i = 0
 
-    def test_wayne_isham_case_number(self):
-        q = (
-            "Wayne Isham would like to renew their SNAP benefits. "
-            "Can they use their Case number 236473447 to renew using COMPASS?"
-        )
-        self.assertPII(q, ["Wayne Isham", "236473447"])
+        for line in text.splitlines():
+            # insert any tables that belong before this line
+            while tbl_i < len(tables) and (tables[tbl_i].bbox[1] // 10) <= len(out_lines):
+                out_lines.append("[TABLE]")
+                for row in tables[tbl_i].extract():
+                    cells = [(c.strip() if c else "") for c in row]
+                    out_lines.append(" | ".join(cells))
+                out_lines.append("[/TABLE]")
+                tbl_i += 1
 
-    def test_amy_rose_and_janet_morris(self):
-        q = (
-            "Amy Rose received an eligibility notice for Medical Assistance but it "
-            "was for someone who isn't in their household. How did Janet Morris "
-            "get included on their notice address at 1 main street, York PA, 17402?"
-        )
-        self.assertPII(q, ["Amy Rose", "Janet Morris"])
+            out_lines.append(line)
 
-    def test_incorrect_ssn(self):
-        q = (
-            "A mother was renewing her Medical Assistance benefits through COMPASS "
-            "but her son's SSN 278888876 is incorrect within the demographics page. "
-            "How do I get that updated?"
-        )
-        self.assertPII(q, ["278888876"])
+        # append any remaining tables
+        while tbl_i < len(tables):
+            out_lines.append("[TABLE]")
+            for row in tables[tbl_i].extract():
+                cells = [(c.strip() if c else "") for c in row]
+                out_lines.append(" | ".join(cells))
+            out_lines.append("[/TABLE]")
+            tbl_i += 1
 
-    def test_janet_young_mci(self):
-        q = (
-            "Janet Young with MCI 799994444 has $3,000 in monthly gross income. "
-            "Is she eligible for Medical Assistance if her net deductions are $400 per month?"
-        )
-        self.assertPII(q, ["Janet Young", "799994444"])
+        return "\n".join(out_lines)
 
-    def test_mary_riley_two_case_numbers(self):
-        q = (
-            "Mary Riley received two different SNAP eligibility notices with two "
-            "different case numbers 153456666 and 175444444. She is afraid that she "
-            "will be accused of benefit fraud. How do we resolve this issue?"
-        )
-        self.assertPII(q, ["Mary Riley", "153456666", "175444444"])
+    def parse_date(self, raw: str | None) -> date | str | None:
+        """
+        From a raw “submitted…” line, pull out any date patterns,
+        parse them, and return the latest date object; if nothing
+        matches or parsing fails, return the raw string (or None).
+        """
+        if not raw:
+            return None
 
-    def test_john_and_mary_taylor(self):
-        q = (
-            "A father applied for Medical Assistance for his Son John Taylor with MCI 222228888 "
-            "and daughter Mary Taylor with MCI 444449999 this morning and received case number 545777777. "
-            "When can he expect to receive their Medical Assistance notices?"
-        )
-        self.assertPII(q, [
-            "John Taylor",
-            "222228888",
-            "Mary Taylor",
-            "444449999",
-            "545777777"
-        ])
+        found: list[str] = []
+        for pat in self.DATE_PATTERNS:
+            found += pat.findall(raw)
+
+        if not found:
+            return raw
+
+        dates = pd.to_datetime(found, errors="coerce").dropna()
+        return dates.max().date() if not dates.empty else raw
+
+    def extract_document(self, pdf_path: Path, doc_type: str) -> pd.DataFrame:
+        """
+        Open one PDF, stitch all pages’ text+tables together, capture
+        the first “submitted…” line, parse its date, and return a
+        one‐row DataFrame.
+        """
+        all_lines: list[str] = []
+        submission_line: str | None = None
+
+        with pdfplumber.open(pdf_path) as pdf:
+            for page in pdf.pages:
+                page_txt = self.extract_text_and_tables(page)
+                for line in page_txt.splitlines():
+                    if submission_line is None and self.SUBMISSION_RE.match(line):
+                        submission_line = line.strip()
+                    all_lines.append(line)
+
+        full_text = "\n".join(all_lines)
+        parsed_date = self.parse_date(submission_line)
+
+        return pd.DataFrame({
+            "doc_name":      [pdf_path.name],
+            "Document Type": [doc_type],
+            "date_modified": [parsed_date],
+            "document":      [full_text],
+        })
+
+    def extract_directory(self, directory: str, doc_type: str) -> pd.DataFrame:
+        """
+        Process all PDFs in `directory`, label them all as `doc_type`,
+        and return the concatenated DataFrame.
+        """
+        records: list[pd.DataFrame] = []
+        dir_path = Path(directory)
+
+        for pdf_path in sorted(dir_path.glob("*.pdf")):
+            records.append(self.extract_document(pdf_path, doc_type))
+
+        return pd.concat(records, ignore_index=True) if records else pd.DataFrame()
+
 
 if __name__ == "__main__":
-    unittest.main()
+    # define your two input folders here:
+    ops_memo_dir   = r"Adding documents to Index\Strikethrough\Input_files\OPS_Memos"
+    clar_dir       = r"Adding documents to Index\Strikethrough\Input_files\Policy_Clarification"
+    output_xlsx    = r"Adding documents to Index\Strikethrough\Extracted_Policy_Text.xlsx"
+
+    extractor = PolicyTextExtractor()
+
+    # extract each folder separately, with its own doc‐type label
+    ops_df  = extractor.extract_directory(ops_memo_dir, "OPS Memo")
+    clar_df = extractor.extract_directory(clar_dir,     "Policy Clarification")
+
+    # combine them into one DataFrame
+    result_df = pd.concat([ops_df, clar_df], ignore_index=True)
+
+    # inspect & write out
+    print(result_df)
+    result_df.to_excel(output_xlsx, index=False)
