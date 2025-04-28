@@ -1,54 +1,39 @@
-import re
-from docx import Document
+1. 
 
-def _has_tables(self, doc: Document) -> bool:
-    """
-    Return True if there is any table in `doc` *other than* one that:
-      • contains the words 'subject', 'to', and 'from', OR
-      • is composed entirely of date strings in one of:
-        – October 1, 2024
-        – 12/07/2025
-        – 12/07/25
-        – 12-07-2025
-        – 12-07-25
-    """
-    header_keywords = {"subject", "to", "from"}
-    # match letter-only tokens (with optional trailing colon)
-    word_pattern = re.compile(r"\b([A-Za-z]+):?\b")
-    # match full month-name dates OR numeric dates with / or -
-    month_names = (
-        "January|February|March|April|May|June|July|"
-        "August|September|October|November|December"
-    )
-    date_pattern = re.compile(
-        rf"^(?:"
-        rf"(?:{month_names})\s+\d{{1,2}},\s*\d{{4}}"
-        rf"|\d{{1,2}}[/-]\d{{1,2}}[/-]\d{{2,4}}"
-        rf")$",
-        re.IGNORECASE
-    )
+Martha Lewis submitted a renewal for LIHEAP assistance, but her file lists the wrong SSN 123-45-6789. How can she correct this before her application is processed?
 
-    for table in doc.tables:
-        # 1) header-keyword detection
-        combined = " ".join(
-            cell.text for row in table.rows for cell in row.cells
-        ).lower()
-        tokens = {w.rstrip(":") for w in word_pattern.findall(combined)}
-        if header_keywords.issubset(tokens):
-            continue
+2. 
 
-        # 2) date-only detection
-        cell_texts = [
-            cell.text.strip()
-            for row in table.rows
-            for cell in row.cells
-            if cell.text.strip()
-        ]
-        if cell_texts and all(date_pattern.match(txt) for txt in cell_texts):
-            continue
+Kevin Brooks with case number 987654321 received a SNAP appointment letter meant for Peter Johnson at 200 Main Ave, Erie PA 16501. How do we fix this issue?
 
-        # otherwise it’s a “real” table
-        return True
+3. 
 
-    # no real tables found
-    return False
+A mother applied for CASH assistance through COMPASS, but her son’s SSN shows as 321-22-4444 instead of the correct number. How do I report this demographic error?
+
+4. 
+
+Sophia Martinez applied for Medical Assistance but received two separate notices under MCI 888777666 and MCI 777888999. Should she worry about a duplicate case being opened?
+
+5. 
+
+Joseph Campbell has $2,450 monthly income and $600 monthly expenses. His case number is 135792468. Is he financially eligible for LIHEAP?
+
+6. 
+
+A father submitted a Medical Assistance application for his child, but the case number 246801357 was never linked to the correct MCI. When will he start receiving notices?
+
+7. 
+
+Olivia Turner with SSN 555-12-3333 mistakenly got her SNAP benefits reduced. Her county is correct but her household size updated incorrectly. How do we escalate this?
+
+8. 
+
+Daniela Rivera applied for CASH assistance, but the notice was mailed to an address in another township — 45 East Broad St, Reading PA 19601. Her correct address is on file. What steps should she take?
+
+9. 
+
+Michael Scott (MCI 123456789) was approved for SNAP but his notice lists David Wallace instead. Their case numbers are very close. Could this cause an audit?
+
+10. 
+
+Emma Clark received a LIHEAP denial stating her income is too high, but her recalculated earnings show she qualifies. Her individual ID is 7654321. How can she request a manual review?
