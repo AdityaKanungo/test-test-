@@ -1,39 +1,68 @@
-1. 
+import unittest
+from content_moderation import ContentModeration
 
-Martha Lewis submitted a renewal for LIHEAP assistance, but her file lists the wrong SSN 123-45-6789. How can she correct this before her application is processed?
+class TestContentModeration(unittest.TestCase):
+    def setUp(self):
+        # instantiate and clear out whitelist so all PERSON ents are caught
+        self.cm = ContentModeration()
+        self.cm.whitelist.clear()
 
-2. 
+    def assertPII(self, query, expected):
+        found = set(self.cm.detect_pii(query))
+        self.assertEqual(found, set(expected),
+                         msg=f"\nQuery: {query!r}\nExpected: {expected}\n  Found: {found}")
 
-Kevin Brooks with case number 987654321 received a SNAP appointment letter meant for Peter Johnson at 200 Main Ave, Erie PA 16501. How do we fix this issue?
+    def test_wayne_isham_case_number(self):
+        q = (
+            "Wayne Isham would like to renew their SNAP benefits. "
+            "Can they use their Case number 236473447 to renew using COMPASS?"
+        )
+        self.assertPII(q, ["Wayne Isham", "236473447"])
 
-3. 
+    def test_amy_rose_and_janet_morris(self):
+        q = (
+            "Amy Rose received an eligibility notice for Medical Assistance but it "
+            "was for someone who isn't in their household. How did Janet Morris "
+            "get included on their notice address at 1 main street, York PA, 17402?"
+        )
+        self.assertPII(q, ["Amy Rose", "Janet Morris"])
 
-A mother applied for CASH assistance through COMPASS, but her son’s SSN shows as 321-22-4444 instead of the correct number. How do I report this demographic error?
+    def test_incorrect_ssn(self):
+        q = (
+            "A mother was renewing her Medical Assistance benefits through COMPASS "
+            "but her son's SSN 278888876 is incorrect within the demographics page. "
+            "How do I get that updated?"
+        )
+        self.assertPII(q, ["278888876"])
 
-4. 
+    def test_janet_young_mci(self):
+        q = (
+            "Janet Young with MCI 799994444 has $3,000 in monthly gross income. "
+            "Is she eligible for Medical Assistance if her net deductions are $400 per month?"
+        )
+        self.assertPII(q, ["Janet Young", "799994444"])
 
-Sophia Martinez applied for Medical Assistance but received two separate notices under MCI 888777666 and MCI 777888999. Should she worry about a duplicate case being opened?
+    def test_mary_riley_two_case_numbers(self):
+        q = (
+            "Mary Riley received two different SNAP eligibility notices with two "
+            "different case numbers 153456666 and 175444444. She is afraid that she "
+            "will be accused of benefit fraud. How do we resolve this issue?"
+        )
+        self.assertPII(q, ["Mary Riley", "153456666", "175444444"])
 
-5. 
+    def test_john_and_mary_taylor(self):
+        q = (
+            "A father applied for Medical Assistance for his Son John Taylor with MCI 222228888 "
+            "and daughter Mary Taylor with MCI 444449999 this morning and received case number 545777777. "
+            "When can he expect to receive their Medical Assistance notices?"
+        )
+        self.assertPII(q, [
+            "John Taylor",
+            "222228888",
+            "Mary Taylor",
+            "444449999",
+            "545777777"
+        ])
 
-Joseph Campbell has $2,450 monthly income and $600 monthly expenses. His case number is 135792468. Is he financially eligible for LIHEAP?
-
-6. 
-
-A father submitted a Medical Assistance application for his child, but the case number 246801357 was never linked to the correct MCI. When will he start receiving notices?
-
-7. 
-
-Olivia Turner with SSN 555-12-3333 mistakenly got her SNAP benefits reduced. Her county is correct but her household size updated incorrectly. How do we escalate this?
-
-8. 
-
-Daniela Rivera applied for CASH assistance, but the notice was mailed to an address in another township — 45 East Broad St, Reading PA 19601. Her correct address is on file. What steps should she take?
-
-9. 
-
-Michael Scott (MCI 123456789) was approved for SNAP but his notice lists David Wallace instead. Their case numbers are very close. Could this cause an audit?
-
-10. 
-
-Emma Clark received a LIHEAP denial stating her income is too high, but her recalculated earnings show she qualifies. Her individual ID is 7654321. How can she request a manual review?
+if __name__ == "__main__":
+    unittest.main()
