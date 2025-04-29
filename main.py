@@ -1,51 +1,66 @@
-# Assuming df is your main DataFrame
-# Step 1: Classify each day
-df['post_holiday_day_type'] = 'Normal'
-df.loc[df['D_1'] == 1, 'post_holiday_day_type'] = 'Day 1 After Holiday'
-df.loc[df['D_2'] == 1, 'post_holiday_day_type'] = 'Day 2 After Holiday'
-df.loc[df['D_3'] == 1, 'post_holiday_day_type'] = 'Day 3 After Holiday'
+import pandas as pd
+from scipy.stats import ttest_ind
 
-# Step 2: Group and calculate average Offered Volume
-volume_summary = df.groupby('post_holiday_day_type')['Offered'].agg(['mean', 'count']).reset_index()
+# Define your outage columns (update this list as per your dataset)
+outage_columns = [
+    'compass', 'ecis accessibility issues', 'ecis application issues',
+    'ecis imaging', 'ecis processing', 'ecis server issues',
+    'genesys', 'not_applicable', 'ecis connectivity issues'
+]
 
-# Step 3: Calculate % increase compared to normal days
-normal_avg = volume_summary.loc[volume_summary['post_holiday_day_type'] == 'Normal', 'mean'].values[0]
-volume_summary['percent_increase_vs_normal'] = (volume_summary['mean'] - normal_avg) / normal_avg * 100
+# Initialize list to store results
+impact_by_type = []
 
-import ace_tools as tools; tools.display_dataframe_to_user(name="Volume Summary", dataframe=volume_summary)
+# Loop through each outage type
+for col in outage_columns:
+    group_on = df[df[col] == 1]
+    group_off = df[df[col] == 0]
 
-volume_summary
+    if group_on.empty:
+        continue  # Skip if no outage of this type
 
+    # Average Metrics
+    avg_wait_on = group_on['Avg_Wait_Time'].mean()
+    avg_wait_off = group_off['Avg_Wait_Time'].mean()
+    delta_wait = avg_wait_on - avg_wait_off
 
+    avg_calls_on = group_on['Offered'].mean()
+    avg_calls_off = group_off['Offered'].mean()
+    delta_calls = avg_calls_on - avg_calls_off
 
-import matplotlib.pyplot as plt
+    # T-tests for significance
+    wait_stat, wait_p = ttest_ind(group_on['Avg_Wait_Time'], group_off['Avg_Wait_Time'], equal_var=False)
+    call_stat, call_p = ttest_ind(group_on['Offered'], group_off['Offered'], equal_var=False)
 
-plt.figure(figsize=(8,5))
-plt.bar(volume_summary['post_holiday_day_type'], volume_summary['mean'], color='skyblue')
-plt.ylabel('Average Call Volume (Offered)')
-plt.title('Average Call Volume After Holidays')
-plt.xticks(rotation=15)
-for i, v in enumerate(volume_summary['mean']):
-    plt.text(i, v + 50, f"{v:.0f}", ha='center', va='bottom', fontweight='bold')
-plt.show()
+    # Number of outage events (approximated using Day + Hour combo)
+    num_outage_events = group_on[['Day', 'Hour']].drop_duplicates().shape[0]
 
+    # Save results
+    impact_by_type.append({
+        'Outage_Type': col,
+        'Delta_Wait_Time': round(delta_wait, 2),
+        'Delta_Call_Volume': round(delta_calls, 2),
+        'Avg_Wait_During': round(avg_wait_on, 2),
+        'Avg_Calls_During': round(avg_calls_on, 2),
+        'Num_Hours': len(group_on),
+        'Num_Outage_Events': num_outage_events,
+        'Wait_Time_Significant': 'Yes' if wait_p < 0.05 else 'No',
+        'Call_Volume_Significant': 'Yes' if call_p < 0.05 else 'No'
+    })
 
-# Create interaction terms
-df['Monday_D1'] = df['Monday'] * df['D_1']
-df['Tuesday_D1'] = df['Tuesday'] * df['D_1']
-df['Wednesday_D1'] = df['Wednesday'] * df['D_1']
-df['Thursday_D1'] = df['Thursday'] * df['D_1']
-df['Friday_D1'] = df['Friday'] * df['D_1']
+# Create DataFrame
+impact_df = pd.DataFrame(impact_by_type)
 
-# Run interaction model
-import statsmodels.formula.api as smf
+# Calculate Composite Score (lower is worse)
+impact_df['Score'] = (
+    impact_df['Delta_Wait_Time'].rank(ascending=False) +
+    impact_df['Delta_Call_Volume'].rank(ascending=False) +
+    impact_df['Num_Hours'].rank(ascending=False) +
+    impact_df['Num_Outage_Events'].rank(ascending=False)
+)
 
-interaction_model = smf.ols(
-    formula="""Q("Offered") ~ Monday + Tuesday + Wednesday + Thursday + Friday
-               + D_1 + D_2 + D_3
-               + Monday_D1 + Tuesday_D1 + Wednesday_D1 + Thursday_D1 + Friday_D1
-            """,
-    data=df
-).fit()
+# Sort by Score
+impact_df = impact_df.sort_values('Score', ascending=True)
 
-print(interaction_model.summary())
+# Display the final result
+import ace_tools as tools; tools.display_dataframe_to_user(name="Ranked Outage Types by Full Impact Analysis", dataframe=impact_df)
