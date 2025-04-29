@@ -1,49 +1,68 @@
 import pandas as pd
 from scipy.stats import ttest_ind
 
-# Define your outage columns (update this list as per your dataset)
+# Make sure 'Day' is a datetime and 'Hour' is an integer
+df['Day'] = pd.to_datetime(df['Day'])
+df['Hour'] = df['Hour'].astype(int)
+
+# Define your outage columns
 outage_columns = [
     'compass', 'ecis accessibility issues', 'ecis application issues',
     'ecis imaging', 'ecis processing', 'ecis server issues',
     'genesys', 'not_applicable', 'ecis connectivity issues'
 ]
 
-# Initialize list to store results
 impact_by_type = []
 
-# Loop through each outage type
+# Loop over each outage type
 for col in outage_columns:
-    group_on = df[df[col] == 1]
-    group_off = df[df[col] == 0]
+    # Identify outage starts
+    outage_starts = df[df[col] == 1][['Day', 'Hour']]
 
-    if group_on.empty:
-        continue  # Skip if no outage of this type
+    next_3_hours_data = pd.DataFrame()
 
-    # Average Metrics
-    avg_wait_on = group_on['Avg_Wait_Time'].mean()
-    avg_wait_off = group_off['Avg_Wait_Time'].mean()
-    delta_wait = avg_wait_on - avg_wait_off
+    # For each outage event, get next 3 hours
+    for idx, row in outage_starts.iterrows():
+        day = row['Day']
+        hour = row['Hour']
 
-    avg_calls_on = group_on['Offered'].mean()
-    avg_calls_off = group_off['Offered'].mean()
-    delta_calls = avg_calls_on - avg_calls_off
+        # Pull next 3 hours data
+        three_hours = df[
+            ((df['Day'] == day) & (df['Hour'].between(hour+1, hour+3)))
+        ]
+        next_3_hours_data = pd.concat([next_3_hours_data, three_hours], ignore_index=True)
 
-    # T-tests for significance
-    wait_stat, wait_p = ttest_ind(group_on['Avg_Wait_Time'], group_off['Avg_Wait_Time'], equal_var=False)
-    call_stat, call_p = ttest_ind(group_on['Offered'], group_off['Offered'], equal_var=False)
+    # If no post-outage data found, skip
+    if next_3_hours_data.empty:
+        continue
 
-    # Number of outage events (approximated using Day + Hour combo)
-    num_outage_events = group_on[['Day', 'Hour']].drop_duplicates().shape[0]
+    # Metrics after outage
+    avg_wait_after = next_3_hours_data['Avg_Wait_Time'].mean()
+    avg_calls_after = next_3_hours_data['Offered'].mean()
+
+    # Metrics for normal hours (baseline)
+    baseline_data = df[~df.index.isin(next_3_hours_data.index)]
+    baseline_wait = baseline_data['Avg_Wait_Time'].mean()
+    baseline_calls = baseline_data['Offered'].mean()
+
+    # Delta Metrics
+    delta_wait = avg_wait_after - baseline_wait
+    delta_calls = avg_calls_after - baseline_calls
+
+    # Significance Tests
+    wait_stat, wait_p = ttest_ind(next_3_hours_data['Avg_Wait_Time'], baseline_data['Avg_Wait_Time'], equal_var=False)
+    call_stat, call_p = ttest_ind(next_3_hours_data['Offered'], baseline_data['Offered'], equal_var=False)
 
     # Save results
     impact_by_type.append({
         'Outage_Type': col,
+        'Avg_Wait_Next3Hours': round(avg_wait_after, 2),
+        'Avg_Calls_Next3Hours': round(avg_calls_after, 2),
+        'Baseline_Wait': round(baseline_wait, 2),
+        'Baseline_Calls': round(baseline_calls, 2),
         'Delta_Wait_Time': round(delta_wait, 2),
         'Delta_Call_Volume': round(delta_calls, 2),
-        'Avg_Wait_During': round(avg_wait_on, 2),
-        'Avg_Calls_During': round(avg_calls_on, 2),
-        'Num_Hours': len(group_on),
-        'Num_Outage_Events': num_outage_events,
+        'Num_Outage_Events': len(outage_starts),
         'Wait_Time_Significant': 'Yes' if wait_p < 0.05 else 'No',
         'Call_Volume_Significant': 'Yes' if call_p < 0.05 else 'No'
     })
@@ -51,16 +70,13 @@ for col in outage_columns:
 # Create DataFrame
 impact_df = pd.DataFrame(impact_by_type)
 
-# Calculate Composite Score (lower is worse)
+# Composite Score (lower is worse)
 impact_df['Score'] = (
     impact_df['Delta_Wait_Time'].rank(ascending=False) +
     impact_df['Delta_Call_Volume'].rank(ascending=False) +
-    impact_df['Num_Hours'].rank(ascending=False) +
     impact_df['Num_Outage_Events'].rank(ascending=False)
 )
 
-# Sort by Score
 impact_df = impact_df.sort_values('Score', ascending=True)
 
-# Display the final result
-import ace_tools as tools; tools.display_dataframe_to_user(name="Ranked Outage Types by Full Impact Analysis", dataframe=impact_df)
+import ace_tools as tools; tools.display_dataframe_to_user(name="Corrected Ranked Outage Types by Next 3 Hours Performance", dataframe=impact_df)
