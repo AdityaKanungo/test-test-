@@ -1,26 +1,31 @@
 import pandas as pd
 
-# Load the Excel file (update filename if needed)
+# Load the Excel file
 df = pd.read_excel("your_file.xlsx", engine="openpyxl")
 
-# Find all relevant columns
-hour_cols = [col for col in df.columns if 'Hour_' in col and '_After_Outage_' in col]
+# Define metrics to calculate
+metrics = ['Offered', 'Avg_Wait_Time']
 
-# Extract outage types
+# Identify all hour-related outage flag columns
+hour_cols = [col for col in df.columns if 'Hour_' in col and '_After_Outage_' in col]
 outage_types = sorted({col.split('_After_Outage_')[1] for col in hour_cols})
 
-# Compute means
+# Prepare results
 results = []
+
 for outage in outage_types:
     row = {'Outage_Type': outage}
     for hour in ['Hour_1', 'Hour_2', 'Hour_3']:
-        col = f"{hour}_After_Outage_{outage}"
-        if col in df.columns:
-            row[hour] = df[df[col] == 1]['Offered'].mean()
+        flag_col = f"{hour}_After_Outage_{outage}"
+        if flag_col in df.columns:
+            filtered_df = df[df[flag_col] == 1]
+            for metric in metrics:
+                row[f"{hour}_{metric}"] = filtered_df[metric].mean()
         else:
-            row[hour] = None
+            for metric in metrics:
+                row[f"{hour}_{metric}"] = None
     results.append(row)
 
-# Convert to DataFrame
-result_df = pd.DataFrame(results)
-print(result_df)
+# Create summary DataFrame
+summary_df = pd.DataFrame(results)
+print(summary_df)
