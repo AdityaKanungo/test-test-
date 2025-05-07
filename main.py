@@ -1,50 +1,63 @@
 import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+from scipy.stats import ttest_ind
 
-# Step 1: Load the Excel file
-df = pd.read_excel("your_file.xlsx", engine="openpyxl")
+# --- Load and prepare data ---
+weather_df = pd.read_csv('weather_events.csv')  # ['day', 'event_type']
+calls_df = pd.read_csv('call_data.csv')         # ['day', 'agents_on_call', 'offered', 'avg_wait_time']
 
-# Step 2: Define metrics to analyze
-metrics = ['Offered', 'Avg_Wait_Time', 'Avg_Handle_Time']
+weather_df['day'] = pd.to_datetime(weather_df['day'])
+calls_df['day'] = pd.to_datetime(calls_df['day'])
 
-# Step 3: Compute baseline values on non-outage days
-normal_days = df[
-    (df['Outage_Flag_Outage_ecis'] != 1) &
-    (df['Outage_Flag_compass'] != 1) &
-    (df['Outage_Flag_ecis down'] != 1) &
-    (df['Outage_Flag_genesys'] != 1)
-]
-baselines = {metric: normal_days[metric].mean() for metric in metrics}
+# Merge on date
+df = pd.merge(calls_df, weather_df, on='day', how='left')
 
-# Step 4: Identify outage types
-hour_cols = [col for col in df.columns if 'Hour_' in col and '_After_Outage_' in col]
-outage_types = sorted({col.split('_After_Outage_')[1] for col in hour_cols})
+# Add weather indicator
+df['weather_event_day'] = df['event_type'].notnull().astype(int)
 
-# Step 5: Prepare results in pivoted structure
-reshaped_results = []
+# --- EDA Visualizations ---
+plt.figure(figsize=(12, 4))
+sns.boxplot(x='weather_event_day', y='agents_on_call', data=df)
+plt.title('Agents on Call: Weather vs Non-Weather Days')
+plt.show()
 
-for outage in outage_types:
-    for hour in ['Hour_1', 'Hour_2', 'Hour_3']:
-        flag_col = f"{hour}_After_Outage_{outage}"
-        if flag_col in df.columns:
-            filtered = df[df[flag_col] == 1]
-            row = {
-                "Outage Type": outage.upper(),
-                "Hour": hour.replace("_", " ")
-            }
-            for metric in metrics:
-                avg_val = filtered[metric].mean()
-                row[f"{metric} Avg"] = avg_val
-                row[f"{metric} Increase"] = avg_val - baselines[metric]
-            reshaped_results.append(row)
+plt.figure(figsize=(12, 4))
+sns.boxplot(x='weather_event_day', y='offered', data=df)
+plt.title('Call Volume: Weather vs Non-Weather Days')
+plt.show()
 
-# Step 6: Create final DataFrame
-final_df = pd.DataFrame(reshaped_results)
+plt.figure(figsize=(12, 4))
+sns.boxplot(x='weather_event_day', y='avg_wait_time', data=df)
+plt.title('Wait Time: Weather vs Non-Weather Days')
+plt.show()
 
-# Optional: Format column order
-cols = ['Outage Type', 'Hour'] + \
-       [f"{m} Increase" for m in metrics] + \
-       [f"{m} Avg" for m in metrics]
-final_df = final_df[cols]
+# --- Statistical Testing ---
+def t_test(metric):
+    group1 = df[df['weather_event_day'] == 1][metric]
+    group2 = df[df['weather_event_day'] == 0][metric]
+    stat, pval = ttest_ind(group1, group2, equal_var=False, nan_policy='omit')
+    return stat, pval
 
-# View the result
-print(final_df)
+print("\nT-Test Results:")
+for col in ['agents_on_call', 'offered', 'avg_wait_time']:
+    stat, pval = t_test(col)
+    print(f"{col}: t-stat = {stat:.2f}, p-value = {pval:.4f}")
+
+# --- Impact by Weather Event Type ---
+impact_by_event = (
+    df[df['weather_event_day'] == 1]
+    .groupby('event_type')[['agents_on_call', 'offered', 'avg_wait_time']]
+    .mean()
+    .sort_values(by='avg_wait_time', ascending=False)
+)
+
+print("\nAverage Metrics by Weather Event Type:")
+print(impact_by_event)
+
+# --- Optional: Rolling trends ---
+df.set_index('day', inplace=True)
+df[['agents_on_call', 'offered', 'avg_wait_time']].rolling(window=7).mean().plot(
+    title='7-Day Rolling Average of Call Center Metrics', figsize=(12, 5))
+plt.ylabel("Metric Value")
+plt.show()
