@@ -1,14 +1,12 @@
-# Calculate means
-metrics = ['Total Agents on Calls', 'Offered', 'avg_wait_time']
-means = df.groupby('weather_event_day')[metrics].mean()
-baseline = means.loc[0]
-delta_pct = ((means.loc[1] - baseline) / baseline) * 100
+fig, axes = plt.subplots(1, 3, figsize=(15, 4))
 
-# Plot
-delta_pct.plot(kind='bar', color=['gray' if v < 0 else 'orange' for v in delta_pct], figsize=(8, 5))
-plt.axhline(0, color='black', linewidth=0.8)
-plt.title('Percentage Change on Weather Days vs Non-Weather Days')
-plt.ylabel('% Change from Baseline')
-plt.xticks(rotation=0)
+for i, metric in enumerate(metrics):
+    values = means[metric]
+    delta = values[1] - values[0]
+    axes[i].bar(['Non-Weather', 'Weather'], values, color=['gray', 'orange'])
+    axes[i].set_title(f'{metric}\nChange: {delta:.2f}')
+    axes[i].set_ylabel(metric)
+
+plt.suptitle('Metric Comparison: Weather vs Non-Weather Days')
 plt.tight_layout()
 plt.show()
