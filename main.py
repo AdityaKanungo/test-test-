@@ -1,15 +1,12 @@
-import matplotlib.pyplot as plt
-import seaborn as sns
+metrics = ['Total Agents on Calls', 'Offered', 'avg_wait_time']
+means = df.groupby('weather_event_day')[metrics].mean()
+baseline = means.loc[0]
+delta = means.loc[1] - baseline
 
-fig, axes = plt.subplots(1, 2, figsize=(14, 5))  # 1 row, 2 columns
-
-# Boxplot for Agents on Call
-sns.boxplot(ax=axes[0], x='weather_event_day', y='Total Agents on Calls', data=df)
-axes[0].set_title('Agents on Call: Weather vs Non-Weather Days')
-
-# Boxplot for Call Volume
-sns.boxplot(ax=axes[1], x='weather_event_day', y='Offered', data=df)
-axes[1].set_title('Call Volume: Weather vs Non-Weather Days')
-
+delta.plot(kind='bar', color=['gray' if v < 0 else 'orange' for v in delta], figsize=(8, 5))
+plt.axhline(0, color='black', linewidth=0.8)
+plt.title('Change in Metrics on Weather Days vs Baseline')
+plt.ylabel('Difference from Non-Weather Days')
+plt.xticks(rotation=0)
 plt.tight_layout()
 plt.show()
