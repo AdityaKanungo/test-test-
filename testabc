@@ -1,46 +1,77 @@
-Slide 1: Approach & Objectives
 
-    Objective:
-    Investigate whether high missed calls on Monday impact call volume and performance later in the week.
+Objective:
+Determine how changes in call volume and handle time impact the number of agents required to meet service level targets during peak and off-peak times.
 
-    Hypothesis:
-    A "High Missed Monday" creates a backlog that spills over into Tuesday/Wednesday.
 
-    Data Used:
-    Daily metrics (Entered, Offered, Accepted, Abandoned, wait times, etc.) from the Genesys platform.
+---
 
-Slide 2: Analysis Process
+1. Key Assumptions & Targets
 
-    Data Preparation:
+Wait Time Target: 3 minutes 30 seconds
 
-        Calculated missed calls = Offered – Accepted.
+Handle Time Assumption: 7 minutes 30 seconds (450 seconds), inclusive of wrap time
 
-        Flagged Mondays with high missed calls (top 25%/75th percentile).
+Accept Rate Target: 95% — correlates with keeping average wait time at or below 3:30
 
-    Feature Engineering:
 
-        Created a dummy variable for High Missed Monday.
 
-        One-hot encoded days of the week and built interaction terms (e.g., High_Missed_Monday × Tuesday).
+---
 
-    Modeling & Visualization:
+2. Key Insight: Wait Time is the Primary Driver of Accept Rate
 
-        Descriptive statistics and regression analyses to test for spillover effects.
+Based on our analysis of historical call center performance, we found a strong and consistent inverse relationship between average wait time and accept rate.
+As wait times increase, caller abandonment rises sharply, reducing the proportion of calls accepted.
 
-        Visualized results with Seaborn bar and line charts.
+When wait times are held below 3:30, the accept rate consistently reaches or exceeds 95%.
 
-Slide 3: Key Findings & Implications
+As wait time extends to 10 minutes or more, accept rates can drop to 85% or lower.
 
-    Key Findings:
 
-        High Missed Monday weeks show higher call volumes on Tuesday and Wednesday.
+This relationship is critical — improving accept rate hinges directly on managing wait time.
 
-        A noticeable dip on Thursday suggests backlog clearance.
 
-        Friday call volumes converge between groups.
+---
 
-    Business Implications:
+3. What Drives Wait Time?
 
-        Consider increasing staffing on Tuesday/Wednesday following a High Missed Monday.
+Wait time is influenced by a combination of operational factors:
 
-        Use real-time monitoring of Monday performance to adjust scheduling.
+Call Volume: Higher volume increases wait times if staffing remains static.
+
+Agent Availability: Fewer agents during peak hours significantly drives up wait time.
+
+Average Handle Time (AHT): Longer call durations reduce call-handling capacity per agent.
+
+
+Each of these levers must be actively managed to maintain performance targets — especially during high-volume periods such as LIHEAP Mondays.
+
+
+---
+
+4. Methodology
+
+A. Regression-Based Forecasting Model
+We built a predictive model using historical data to quantify how call volume, agent count, and handle time affect wait time and accept rate.
+The model demonstrates:
+
+A strong predictive relationship: R² = 93%
+
+Used to simulate required staffing levels under varying call volumes and service targets
+
+
+B. Scenario-Based Staffing Projections
+Using fixed handle time (450 seconds), we projected agent requirements under typical and peak day scenarios to meet a 95% accept rate and 3:30 wait time target.
+
+On peak days (e.g., LIHEAP Mondays), up to 480 agents are needed — a 25–60% increase over typical levels.
+
+Even average-volume days require additional staff beyond historical norms to meet targets.
+
+
+
+---
+
+Supporting Visual
+
+Accept Rate vs. Average Wait Time
+The regression confirms a clear inverse linear trend:
+Model: y = -0.0002x + 0.996 | R² = 0.9842
