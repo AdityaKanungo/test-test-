@@ -1,1 +1,65 @@
+pip install openai pandas numpy matplotlib seaborn scikit-learn
+import os
+import openai
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.metrics.pairwise import cosine_similarity
+from sklearn.decomposition import PCA
+
+# Set your OpenAI API key
+openai.api_key = "your_openai_api_key"
+
+# Path to directory containing persona .txt files
+persona_dir = "personas"
+
+# Read persona texts
+persona_texts = {}
+for filename in os.listdir(persona_dir):
+    if filename.endswith(".txt"):
+        path = os.path.join(persona_dir, filename)
+        with open(path, "r", encoding="utf-8") as file:
+            persona_texts[filename.replace(".txt", "")] = file.read()
+
+# Get embeddings using OpenAI API
+def get_embedding(text, model="text-embedding-3-small"):
+    response = openai.embeddings.create(input=[text], model=model)
+    return response.data[0].embedding
+
+embeddings = {}
+for name, text in persona_texts.items():
+    embeddings[name] = get_embedding(text)
+
+# Create DataFrame of embeddings
+names = list(embeddings.keys())
+embedding_matrix = np.array([embeddings[name] for name in names])
+
+# Cosine similarity matrix
+similarity_matrix = cosine_similarity(embedding_matrix)
+
+# Plot similarity heatmap
+plt.figure(figsize=(10, 8))
+sns.heatmap(similarity_matrix, xticklabels=names, yticklabels=names, annot=True, cmap="YlGnBu")
+plt.title("Semantic Similarity Heatmap Between Personas (OpenAI Embeddings)")
+plt.tight_layout()
+plt.show()
+
+# Reduce to 2D with PCA for scatter plot
+pca = PCA(n_components=2)
+embedding_2d = pca.fit_transform(embedding_matrix)
+
+# Plot 2D scatter
+plt.figure(figsize=(10, 6))
+for i, name in enumerate(names):
+    plt.scatter(embedding_2d[i, 0], embedding_2d[i, 1], label=name)
+    plt.text(embedding_2d[i, 0] + 0.01, embedding_2d[i, 1], name, fontsize=9)
+
+plt.title("Persona Clustering in 2D PCA Space")
+plt.xlabel("PCA Dimension 1")
+plt.ylabel("PCA Dimension 2")
+plt.legend()
+plt.grid(True)
+plt.tight_layout()
+plt.show()
 
