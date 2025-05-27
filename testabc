@@ -1,59 +1,9 @@
-import os
-import openai
-import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
-import seaborn as sns
-import umap
-import hdbscan
-from sklearn.metrics.pairwise import cosine_similarity
+Streamlit Frontend Development Progress Summary:
 
-# STEP 1: Set your API key
-openai.api_key = "your_openai_api_key"
+Developed the basic layout of the Policy Engine page, including initial UI elements and color schemes.
 
-# STEP 2: Load persona texts from files
-persona_dir = "personas"
-persona_texts = {}
-for filename in os.listdir(persona_dir):
-    if filename.endswith(".txt"):
-        with open(os.path.join(persona_dir, filename), "r", encoding="utf-8") as f:
-            persona_texts[filename.replace(".txt", "")] = f.read()
+Implemented a custom JS widget to track live word count input by the user.
 
-# STEP 3: Embed each persona using OpenAI
-def get_embedding(text, model="text-embedding-3-small"):
-    response = openai.embeddings.create(input=[text], model=model)
-    return response.data[0].embedding
+Added visual alerts: orange warning on word limit approach, red alert and disabled submission on limit exceed.
 
-embeddings = {name: get_embedding(text) for name, text in persona_texts.items()}
-names = list(embeddings.keys())
-embedding_matrix = np.array([embeddings[name] for name in names])
-
-# STEP 4: UMAP dimensionality reduction
-reducer = umap.UMAP(n_neighbors=5, min_dist=0.3, metric='cosine', random_state=42)
-embedding_2d = reducer.fit_transform(embedding_matrix)
-
-# STEP 5: Clustering with HDBSCAN
-clusterer = hdbscan.HDBSCAN(min_cluster_size=2, metric='euclidean')
-clusters = clusterer.fit_predict(embedding_2d)
-
-# STEP 6: UMAP Scatter Plot (Clustered)
-plt.figure(figsize=(10, 7))
-palette = sns.color_palette("Set2", len(set(clusters)))
-for i, name in enumerate(names):
-    plt.scatter(embedding_2d[i, 0], embedding_2d[i, 1], s=120, color=palette[clusters[i]], edgecolors='black')
-    plt.text(embedding_2d[i, 0] + 0.01, embedding_2d[i, 1], name, fontsize=9)
-
-plt.title("🎯 UMAP Clustering of Personas (Color = Semantic Cluster)")
-plt.xlabel("UMAP-1")
-plt.ylabel("UMAP-2")
-plt.grid(True)
-plt.tight_layout()
-plt.show()
-
-# STEP 7: Cosine similarity heatmap
-similarity_matrix = cosine_similarity(embedding_matrix)
-plt.figure(figsize=(10, 8))
-sns.heatmap(similarity_matrix, xticklabels=names, yticklabels=names, annot=True, cmap="coolwarm", square=True)
-plt.title("🔥 Semantic Similarity Heatmap (OpenAI Embeddings)")
-plt.tight_layout()
-plt.show()
+Created placeholder UI components for chat history in the left navigation panel.
