@@ -1,0 +1,80 @@
+Here are the two requested slides based on the images and notes provided:
+
+
+---
+
+Slide 1: Forecasting and Analysis Tool – Summary and Use Case
+
+Overview: The OCYF Forecasting and Analysis Tool supports data-driven staffing and operational decision-making by forecasting call and referral volumes and assessing the impact of various staffing scenarios. It provides both baseline predictions and “what-if” simulations to guide resource allocation and operational planning.
+
+Key Use Case:
+
+Supports ChildLine hotline operations by forecasting expected volume of calls and electronic referrals.
+
+Helps identify necessary staffing levels based on volume trends and service expectations.
+
+Enables proactive planning by simulating scenarios like outages or unexpected demand changes.
+
+
+Core Features:
+
+Daily and hourly forecasts of call and referral volumes
+
+Scenario modeling based on staffing levels, assumptions, and external events
+
+Key outputs: expected wait times, abandoned calls, and staff needs
+
+Exportable tables and visual trends for planning and reporting
+
+
+Benefits:
+
+Improves decision-making with real-time trend analysis
+
+Optimizes staffing to reduce wait times and missed calls
+
+Enhances flexibility in response to emergencies and policy changes
+
+
+
+---
+
+Slide 2: Managed Identity Exception Justification
+
+Why Managed Identity is Not Required
+
+Tool Nature & Access Controls:
+
+🔒 No PII or sensitive data is processed or stored.
+
+👤 No user authentication or input is required; the tool is a closed forecasting model used for internal analysis only.
+
+🌐 Network-restricted: Only accessible from within the CWOPA network. It cannot be accessed externally or exposed to the public internet.
+
+
+Purpose of Tool:
+
+Operates strictly as a decision support utility for internal operations.
+
+Generates outputs from preloaded datasets to support planning – not real-time transactional processing or identity-linked services.
+
+
+Why This is an Exception:
+
+Managed identity is designed to secure access to resources where identity or user-level access control is needed. Since this tool:
+
+does not authenticate users,
+
+does not access or expose sensitive or protected data,
+
+and cannot be accessed outside CWOPA’s internal network,
+
+
+
+it meets the criteria for exception from managed identity requirements under current security policies.
+
+
+---
+
+Let me know if you'd like these exported into PowerPoint or another format.
+
