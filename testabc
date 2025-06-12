@@ -1,0 +1,24 @@
+query = f"""
+SELECT
+  {max_id} + ROW_NUMBER() OVER (ORDER BY p.program_id) AS program_key,
+  p.program_id AS program_code,
+  p.program_name,
+  p.department,
+  am.high_school_name AS school,
+  p.degree_type AS degree_level,
+  p.is_stem AS stem_flag,
+  p.created_timestamp
+FROM (
+  SELECT DISTINCT
+    p.program_id,
+    p.program_name,
+    p.department,
+    am.high_school_name,
+    p.degree_type,
+    p.is_stem,
+    p.created_timestamp
+  FROM lh_200_silver.program p
+  LEFT JOIN lh_200_silver.student_master sm ON p.program_id = sm.program_id
+  LEFT JOIN lh_200_silver.applications_master am ON sm.applicant_id = am.applicant_id
+) p
+"""
