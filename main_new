@@ -1,1 +1,29 @@
+CLM_pattern = r'CLM\*[^\*]+?\*'
 
+for filename in os.listdir(directory):
+    if filename.lower().endswith('.edi'):
+        file_path = os.path.join(directory, filename)
+        with open(file_path, 'r') as file:
+            edi_content = file.read().replace('\n', '').replace('\r', '')
+
+            # Find all CLM blocks (with positions)
+            clm_matches = list(re.finditer(CLM_pattern, edi_content))
+
+            for i, match in enumerate(clm_matches):
+                CLM_code = match.group()
+                start_pos = match.end()
+                end_pos = clm_matches[i+1].start() if i+1 < len(clm_matches) else len(edi_content)
+
+                # This is the block of text between this CLM and the next
+                segment = edi_content[start_pos:end_pos]
+
+                # Now extract HI codes
+                dx_matches = re.findall(r'HI\*([A-Z]{3}):([^*~]+)', segment)
+
+                for segment_code, dx_code in dx_matches:
+                    if segment_code in ('ABK', 'ABN', 'ABF', 'APR', 'ABI'):
+                        data.append({
+                            'filename': filename,
+                            'CLM_code': CLM_code,
+                            'DX_code': dx_code
+                        })
