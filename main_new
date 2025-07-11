@@ -1,29 +1,42 @@
-CLM_pattern = r'CLM\*[^\*]+?\*'
+import os
+import re
+import pandas as pd
 
-for filename in os.listdir(directory):
-    if filename.lower().endswith('.edi'):
-        file_path = os.path.join(directory, filename)
-        with open(file_path, 'r') as file:
-            edi_content = file.read().replace('\n', '').replace('\r', '')
+def extract_CLM_DX_codes(directory):
+    CLM_pattern = r'CLM\*[^\*]+?\*'  # Match CLM*<claim_id>*
+    DX_pattern = r'HI\*([A-Z]{3}):([^*~]+)'  # Match HI segments like HI*ABK:Z1234
 
-            # Find all CLM blocks (with positions)
-            clm_matches = list(re.finditer(CLM_pattern, edi_content))
+    data = []  # ✅ Initialize here
 
-            for i, match in enumerate(clm_matches):
-                CLM_code = match.group()
-                start_pos = match.end()
-                end_pos = clm_matches[i+1].start() if i+1 < len(clm_matches) else len(edi_content)
+    for filename in os.listdir(directory):
+        if filename.lower().endswith('.edi'):
+            file_path = os.path.join(directory, filename)
+            with open(file_path, 'r') as file:
+                # Read and clean content
+                edi_content = file.read().replace('\n', '').replace('\r', '')
 
-                # This is the block of text between this CLM and the next
-                segment = edi_content[start_pos:end_pos]
+                # Find all CLM positions
+                clm_matches = list(re.finditer(CLM_pattern, edi_content))
 
-                # Now extract HI codes
-                dx_matches = re.findall(r'HI\*([A-Z]{3}):([^*~]+)', segment)
+                for i, match in enumerate(clm_matches):
+                    CLM_code = match.group()  # Example: CLM*0178787887786I1*
+                    start_pos = match.end()
+                    end_pos = clm_matches[i+1].start() if i+1 < len(clm_matches) else len(edi_content)
 
-                for segment_code, dx_code in dx_matches:
-                    if segment_code in ('ABK', 'ABN', 'ABF', 'APR', 'ABI'):
-                        data.append({
-                            'filename': filename,
-                            'CLM_code': CLM_code,
-                            'DX_code': dx_code
-                        })
+                    # Slice content between this CLM and next
+                    clm_block = edi_content[start_pos:end_pos]
+
+                    # Find associated DX codes
+                    dx_matches = re.findall(DX_pattern, clm_block)
+
+                    for segment, code in dx_matches:
+                        if segment in ('ABK', 'ABN', 'ABF', 'APR', 'ABI'):
+                            data.append({
+                                'filename': filename,
+                                'CLM_code': CLM_code,
+                                'DX_code': code
+                            })
+
+    # Return as DataFrame
+    df = pd.DataFrame(data)
+    return df
