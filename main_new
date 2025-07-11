@@ -1,29 +1,39 @@
-import os, sys
-sys.path.insert(0, os.path.dirname(__file__))
-import streamlit as st
-from components.header import Header
-from components.sidebar import Sidebar
-from components.content_area import ContentArea
-from components.chat_input import ChatInput
+import os
+import re
+import pandas as pd
 
-# Set wide layout for better responsiveness
-st.set_page_config(layout='wide')
+def extract_CLM_DX_codes(directory):
+    CLM_block_pattern = r'(CLM\*[^~]+~(?:[^~]*~)*?)(?=CLM\*|$)'  # Extract blocks starting with CLM to next CLM or end
+    DX_pattern = r'HI\*([A-Z]{3}):([^*~]+)'
 
-# Initialize session state
-if 'history' not in st.session_state:
-    st.session_state.history = []
+    data = []
 
-# Render UI components
-Header().render()
-st.markdown("<div style='height:60px;'></div>", unsafe_allow_html=True)
+    for filename in os.listdir(directory):
+        if filename.lower().endswith('.edi'):
+            file_path = os.path.join(directory, filename)
+            with open(file_path, 'r') as file:
+                edi_content = file.read()
 
-# Use columns that adjust based on screen size
-cols = st.columns([1, 3])
-with cols[0]:
-    Sidebar().render(st.session_state.history)
-with cols[1]:
-    ContentArea().render('Welcome to the Policy Navigator — ask your policy question below:')
-    user_input = ChatInput().render()
-    if user_input:
-        st.session_state.history.append(user_input)
-        ContentArea().render(f"**You asked:** {user_input}")
+                # Extract all CLM blocks
+                CLM_blocks = re.findall(CLM_block_pattern, edi_content)
+
+                for block in CLM_blocks:
+                    # Extract the first CLM* line
+                    CLM_match = re.search(r'CLM\*[^*]+\*', block)
+                    if not CLM_match:
+                        continue
+                    CLM_code = CLM_match.group()
+
+                    # Extract all HI diagnosis codes from the same block
+                    DX_matches = re.findall(DX_pattern, block)
+
+                    for segment, code in DX_matches:
+                        if segment in ('ABK', 'ABN', 'ABF', 'APR', 'ABI'):
+                            data.append({
+                                'filename': filename,
+                                'CLM_code': CLM_code,
+                                'DX_code': code
+                            })
+
+    df = pd.DataFrame(data)
+    return df
