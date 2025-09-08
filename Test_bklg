@@ -1,1 +1,421 @@
+"""
+Generate relational sample data for a Case/Application/Household LDM
+and save to an Excel workbook (one sheet per table).
 
+Tables:
+- Lookups: lu_household_relation, lu_race, lu_benefit_type
+- Core: case_hdr, case_comment, case_lock, address, case_address,
+        application, email, phone, application_household
+- People: individual, individual_detail, individual_race, individual_benefit
+- Financials: resource, expense, income, earned_income, unearned_income
+"""
+
+import random
+from datetime import datetime, timedelta, date
+from pathlib import Path
+import pandas as pd
+
+# ------------------- configuration -------------------
+SEED = 42            # change for different data each run
+N_CASES = 35         # ~1K rows overall; increase for more
+OUT_PATH = Path("ldm_sample.xlsx")
+# -----------------------------------------------------
+
+random.seed(SEED)
+
+# ---------- helper generators ----------
+first_names = ["Alex","Jamie","Riley","Taylor","Jordan","Casey","Avery","Sam","Morgan","Drew",
+               "Quinn","Cameron","Hayden","Parker","Reese","Rowan","Skyler","Emerson","Kai",
+               "Logan","Noah","Olivia","Emma","Sophia","Liam","Mia","Ethan","Isabella","Mason","Amelia"]
+last_names  = ["Harper","Rivera","Nguyen","Patel","Johnson","Williams","Brown","Jones","Garcia","Miller",
+               "Davis","Rodriguez","Martinez","Hernandez","Lopez","Gonzalez","Wilson","Anderson","Thomas",
+               "Taylor","Moore","Jackson","Martin","Lee","Perez","Thompson","White","Harris","Sanchez","Clark"]
+cities      = ["Springfield","Riverton","Fairview","Greenville","Franklin","Bristol","Madison","Georgetown",
+               "Clinton","Salem","Arlington","Ashland","Milton","Auburn","Oxford"]
+states      = ["AL","AK","AZ","AR","CA","CO","CT","DE","FL","GA","IA","ID","IL","IN","KS","KY","LA","MA","MD",
+               "ME","MI","MN","MO","MS","MT","NC","ND","NE","NH","NJ","NM","NV","NY","OH","OK","OR","PA","RI",
+               "SC","SD","TN","TX","UT","VA","VT","WA","WI","WV","WY"]
+
+def rand_phone():
+    return f"+1-{random.randint(200,989)}-{random.randint(200,989):03}-{random.randint(0,9999):04}"
+
+def rand_email(first, last):
+    domain = random.choice(["example.com","mail.com","inbox.org","email.net"])
+    return f"{first.lower()}.{last.lower()}{random.randint(1,999)}@{domain}"
+
+def rand_address():
+    line1 = f"{random.randint(100,9999)} {random.choice(['Maple','Oak','Pine','Cedar','Elm','Willow','Hill','Lake','Sunset','Ridge'])} {random.choice(['St','Ave','Blvd','Rd','Dr'])}"
+    line2 = random.choice([None, f"Apt {random.randint(1,99)}", f"Unit {random.randint(1,30)}"])
+    city = random.choice(cities)
+    state = random.choice(states)
+    postal = f"{random.randint(10000,99999)}"
+    return line1, line2, city, state, postal
+
+def rand_date(start_year=2023, end_year=2025):
+    start = datetime(start_year,1,1)
+    end = datetime(end_year,12,31)
+    delta = end - start
+    d = start + timedelta(days=random.randint(0, delta.days))
+    return d.date()
+
+def rand_dob(min_age=0, max_age=90):
+    today = date(2025, 9, 8)  # fixed for reproducibility
+    age = random.randint(min_age, max_age)
+    birth = today - timedelta(days=int(age*365.25) + random.randint(0, 364))
+    return birth
+
+def money(mean, variation=0.4):
+    base = abs(random.gauss(mean, mean*variation))
+    return round(base, 2)
+
+# ---------- lookup tables ----------
+lu_household_relation = pd.DataFrame([
+    {"household_relation_id": 1, "code": "HEAD", "name": "Head of Household"},
+    {"household_relation_id": 2, "code": "SPOUSE", "name": "Spouse/Partner"},
+    {"household_relation_id": 3, "code": "CHILD", "name": "Child"},
+    {"household_relation_id": 4, "code": "OTHER", "name": "Other Dependent"},
+])
+
+lu_race = pd.DataFrame([
+    {"race_id": 10, "code": "WHT", "name": "White"},
+    {"race_id": 20, "code": "BLK", "name": "Black or African American"},
+    {"race_id": 30, "code": "ASN", "name": "Asian"},
+    {"race_id": 40, "code": "NAT", "name": "American Indian/Alaska Native"},
+    {"race_id": 50, "code": "HPI", "name": "Native Hawaiian/Pacific Islander"},
+])
+
+lu_benefit_type = pd.DataFrame([
+    {"benefit_type_id": 100, "code": "SNAP", "name": "Food Assistance"},
+    {"benefit_type_id": 200, "code": "MEDI", "name": "Medicaid"},
+    {"benefit_type_id": 300, "code": "TANF", "name": "Cash Assistance"},
+])
+
+# ---------- core tables ----------
+case_hdr_rows = []
+case_comment_rows = []
+case_lock_rows = []
+address_rows = []
+case_address_rows = []
+application_rows = []
+email_rows = []
+phone_rows = []
+application_household_rows = []
+
+address_id_seq = 3000
+case_comment_id_seq = 1100
+case_lock_id_seq = 1200
+case_address_id_seq = 3100
+email_id_seq = 5100
+phone_id_seq = 5200
+application_id_seq = 5000
+application_household_id_seq = 7000
+
+for i in range(N_CASES):
+    case_id = 1000 + i + 1
+    case_number = f"C-{100000 + i}"
+    opened_dt = rand_date(2024, 2025)
+    status = random.choice(["OPEN","UNDER_REVIEW","APPROVED","DENIED"])
+
+    case_hdr_rows.append({
+        "case_id": case_id,
+        "case_number": case_number,
+        "status_code": status,
+        "opened_dt": opened_dt,
+        "closed_dt": None
+    })
+
+    # comments (1–2 per case)
+    for _ in range(random.randint(1,2)):
+        case_comment_id_seq += 1
+        case_comment_rows.append({
+            "case_comment_id": case_comment_id_seq,
+            "case_id": case_id,
+            "commented_by": random.choice(["J.Smith","A.Rivera","M.Lopez","K.Chen"]),
+            "comment_text": random.choice(["Initial intake complete.","Docs uploaded.","Income verified.","Pending verification."]),
+            "commented_ts": datetime.combine(opened_dt, datetime.min.time()) + timedelta(hours=random.randint(8,17))
+        })
+
+    # occasional lock
+    if random.random() < 0.35:
+        case_lock_id_seq += 1
+        case_lock_rows.append({
+            "case_lock_id": case_lock_id_seq,
+            "case_id": case_id,
+            "locked_by": random.choice(["system","A.Rivera","fraud-bot"]),
+            "locked_ts": datetime.combine(opened_dt, datetime.min.time()) + timedelta(days=random.randint(0,5), hours=random.randint(8,17)),
+            "lock_reason": random.choice(["Verification","Duplicate review","Fraud check"])
+        })
+
+    # address + link
+    address_id_seq += 1
+    line1, line2, city, state, postal = rand_address()
+    address_rows.append({
+        "address_id": address_id_seq,
+        "line1": line1,
+        "line2": line2,
+        "city": city,
+        "state_prov": state,
+        "postal_code": postal,
+        "country_code": "US"
+    })
+    case_address_id_seq += 1
+    case_address_rows.append({
+        "case_address_id": case_address_id_seq,
+        "case_id": case_id,
+        "address_id": address_id_seq,
+        "address_type_code": random.choice(["PHYSICAL","MAILING"]),
+        "start_dt": opened_dt,
+        "end_dt": None
+    })
+
+    # application
+    application_id_seq += 1
+    submitted_ts = datetime.combine(opened_dt, datetime.min.time()) + timedelta(hours=random.randint(9,18))
+    app_status = random.choice(["UNDER_REVIEW","PENDING","SUBMITTED","WITHDRAWN"])
+    application_rows.append({
+        "application_id": application_id_seq,
+        "case_id": case_id,
+        "app_number": f"A-{random.randint(100000,999999)}",
+        "submitted_ts": submitted_ts,
+        "status_code": app_status,
+        "channel_code": random.choice(["ONLINE","PHONE","IN_PERSON"])
+    })
+
+    # email & phone
+    f = random.choice(first_names); l = random.choice(last_names)
+    email_id_seq += 1
+    email_rows.append({
+        "email_id": email_id_seq,
+        "application_id": application_id_seq,
+        "email_addr": rand_email(f,l),
+        "is_primary": True
+    })
+    phone_id_seq += 1
+    phone_rows.append({
+        "phone_id": phone_id_seq,
+        "application_id": application_id_seq,
+        "phone_number": rand_phone(),
+        "phone_type_code": random.choice(["mobile","home","work"]),
+        "is_primary": True
+    })
+
+    # household (head set later)
+    application_household_id_seq += 1
+    application_household_rows.append({
+        "application_household_id": application_household_id_seq,
+        "application_id": application_id_seq,
+        "head_individual_id": None
+    })
+
+# Build DataFrames
+case_hdr = pd.DataFrame(case_hdr_rows)
+case_comment = pd.DataFrame(case_comment_rows)
+case_lock = pd.DataFrame(case_lock_rows)
+address = pd.DataFrame(address_rows)
+case_address = pd.DataFrame(case_address_rows)
+application = pd.DataFrame(application_rows)
+email = pd.DataFrame(email_rows)
+phone = pd.DataFrame(phone_rows)
+application_household = pd.DataFrame(application_household_rows)
+
+# ---------- individuals & related ----------
+individual_rows, individual_detail_rows = [], []
+individual_race_rows, individual_benefit_rows = [], []
+resource_rows, expense_rows = [], []
+income_rows, earned_income_rows, unearned_income_rows = [], [], []
+
+individual_id_seq = 9000
+individual_detail_id_seq = 9100
+individual_benefit_id_seq = 9200
+resource_id_seq = 9300
+expense_id_seq = 9400
+income_id_seq = 9500
+earned_income_id_seq = 9600
+unearned_income_id_seq = 9700
+
+for hh in application_household.itertuples(index=False):
+    # household size 1–5
+    size = random.choices([1,2,3,4,5],[0.2,0.35,0.25,0.15,0.05])[0]
+    member_ids = []
+    for k in range(size):
+        individual_id_seq += 1
+        is_head = (k == 0)
+        relation = 1 if is_head else random.choice([2,3,3,3,4])  # spouse/child/other
+        first = random.choice(first_names)
+        last = random.choice(last_names)
+        if relation == 3: dob = rand_dob(0,17)
+        elif relation in (1,2): dob = rand_dob(20,70)
+        else: dob = rand_dob(5,85)
+        ssn_last4 = None if relation==3 and random.random()<0.7 else f"{random.randint(0,9999):04}"
+
+        individual_rows.append({
+            "individual_id": individual_id_seq,
+            "application_household_id": hh.application_household_id,
+            "first_name": first,
+            "last_name": last,
+            "dob": dob,
+            "ssn_last4": ssn_last4,
+            "gender_code": random.choice(["M","F","X"]),
+            "is_head": is_head,
+            "household_relation_id": relation
+        })
+        member_ids.append(individual_id_seq)
+
+        # detail
+        individual_detail_id_seq += 1
+        individual_detail_rows.append({
+            "individual_detail_id": individual_detail_id_seq,
+            "individual_id": individual_id_seq,
+            "citizenship_status_code": random.choice(["CITIZEN","PR","NONRES"]),
+            "disability_flag": random.random() < 0.05,
+            "veteran_flag": random.random() < 0.08,
+            "residency_years": random.randint(0,20),
+            "preferred_language": random.choice(["English","Spanish","Chinese","Vietnamese","Arabic"])
+        })
+
+        # race 1–2 entries
+        races = random.sample(list(lu_race["race_id"]), k=random.choice([1,1,2]))
+        for r in races:
+            individual_race_rows.append({"individual_id": individual_id_seq, "race_id": r})
+
+        # optional benefit
+        if random.random() < 0.5:
+            individual_benefit_id_seq += 1
+            individual_benefit_rows.append({
+                "individual_benefit_id": individual_benefit_id_seq,
+                "application_household_id": hh.application_household_id,
+                "individual_id": individual_id_seq,
+                "benefit_type_id": random.choice(list(lu_benefit_type["benefit_type_id"])),
+                "status_code": random.choice(["PENDING","ACTIVE","DENIED"]),
+                "start_dt": random.choice([None, rand_date(2023,2025)]),
+                "end_dt": None
+            })
+
+        # resources 0–2
+        for _ in range(random.choice([0,1,1,2])):
+            resource_id_seq += 1
+            resource_rows.append({
+                "resource_id": resource_id_seq,
+                "individual_id": individual_id_seq,
+                "resource_type_code": random.choice(["VEHICLE","BANK","CASH","INVEST"]),
+                "description": random.choice(["Savings","Checking","2014 Honda Civic","Cash on hand","ETF account"]),
+                "value_amt": money(3000, 0.8),
+                "as_of_dt": rand_date(2024,2025)
+            })
+
+        # expenses 0–2
+        for _ in range(random.choice([0,1,1,2])):
+            expense_id_seq += 1
+            expense_rows.append({
+                "expense_id": expense_id_seq,
+                "individual_id": individual_id_seq,
+                "expense_type_code": random.choice(["RENT","UTILITIES","CHILDCARE","MEDICAL"]),
+                "amount_amt": money(400, 0.7),
+                "frequency_code": random.choice(["WEEKLY","BIWEEKLY","MONTHLY"]),
+                "start_dt": rand_date(2023,2025),
+                "end_dt": None
+            })
+
+        # incomes 0–2
+        for _ in range(random.choice([0,1,1,2])):
+            income_id_seq += 1
+            inc_type = random.choice(["EARNED","UNEARNED"])
+            source = random.choice(["City Grocers","BuildCo","State UI","Pension","Gig Work","Temp Agency"])
+            amt = money(2200 if inc_type=="EARNED" else 900, 0.6)
+            income_rows.append({
+                "income_id": income_id_seq,
+                "individual_id": individual_id_seq,
+                "income_type_code": inc_type,
+                "employer_or_source": source,
+                "amount_amt": amt,
+                "frequency_code": random.choice(["WEEKLY","BIWEEKLY","MONTHLY"]),
+                "start_dt": rand_date(2023,2025),
+                "end_dt": None
+            })
+            if inc_type == "EARNED":
+                earned_income_id_seq += 1
+                earned_income_rows.append({
+                    "earned_income_id": earned_income_id_seq,
+                    "income_id": income_id_seq,
+                    "employer_name": source if source not in ["State UI","Pension"] else "City Grocers",
+                    "job_title": random.choice(["Cashier","Driver","Assembler","Cook","Clerk"]),
+                    "hours_per_week": round(random.uniform(15, 45), 1)
+                })
+            else:
+                unearned_income_id_seq += 1
+                unearned_income_rows.append({
+                    "unearned_income_id": unearned_income_id_seq,
+                    "income_id": income_id_seq,
+                    "program_code": random.choice(["UI","SSI","SSDI","PENSION"]),
+                    "claim_or_case_no": f"{random.choice(['UI','SS','PN'])}-{random.randint(10000,99999)}"
+                })
+
+    # set head pointer on household
+    application_household.loc[
+        application_household["application_household_id"] == hh.application_household_id,
+        "head_individual_id"
+    ] = member_ids[0]
+
+# DataFrames
+individual = pd.DataFrame(individual_rows)
+individual_detail = pd.DataFrame(individual_detail_rows)
+individual_race = pd.DataFrame(individual_race_rows)
+individual_benefit = pd.DataFrame(individual_benefit_rows)
+resource = pd.DataFrame(resource_rows)
+expense = pd.DataFrame(expense_rows)
+income = pd.DataFrame(income_rows)
+earned_income = pd.DataFrame(earned_income_rows)
+unearned_income = pd.DataFrame(unearned_income_rows)
+
+# ---------- save to Excel (one sheet per table) ----------
+with pd.ExcelWriter(OUT_PATH, engine="xlsxwriter") as writer:
+    lu_household_relation.to_excel(writer, sheet_name="lu_household_relation", index=False)
+    lu_race.to_excel(writer, sheet_name="lu_race", index=False)
+    lu_benefit_type.to_excel(writer, sheet_name="lu_benefit_type", index=False)
+    case_hdr.to_excel(writer, sheet_name="case_hdr", index=False)
+    case_comment.to_excel(writer, sheet_name="case_comment", index=False)
+    case_lock.to_excel(writer, sheet_name="case_lock", index=False)
+    address.to_excel(writer, sheet_name="address", index=False)
+    case_address.to_excel(writer, sheet_name="case_address", index=False)
+    application.to_excel(writer, sheet_name="application", index=False)
+    email.to_excel(writer, sheet_name="email", index=False)
+    phone.to_excel(writer, sheet_name="phone", index=False)
+    application_household.to_excel(writer, sheet_name="application_household", index=False)
+    individual.to_excel(writer, sheet_name="individual", index=False)
+    individual_detail.to_excel(writer, sheet_name="individual_detail", index=False)
+    individual_race.to_excel(writer, sheet_name="individual_race", index=False)
+    individual_benefit.to_excel(writer, sheet_name="individual_benefit", index=False)
+    resource.to_excel(writer, sheet_name="resource", index=False)
+    expense.to_excel(writer, sheet_name="expense", index=False)
+    income.to_excel(writer, sheet_name="income", index=False)
+    earned_income.to_excel(writer, sheet_name="earned_income", index=False)
+    unearned_income.to_excel(writer, sheet_name="unearned_income", index=False)
+
+# Optional: quick counts so you can sanity check in logs
+tables = {
+    "lu_household_relation": lu_household_relation,
+    "lu_race": lu_race,
+    "lu_benefit_type": lu_benefit_type,
+    "case_hdr": case_hdr,
+    "case_comment": case_comment,
+    "case_lock": case_lock,
+    "address": address,
+    "case_address": case_address,
+    "application": application,
+    "email": email,
+    "phone": phone,
+    "application_household": application_household,
+    "individual": individual,
+    "individual_detail": individual_detail,
+    "individual_race": individual_race,
+    "individual_benefit": individual_benefit,
+    "resource": resource,
+    "expense": expense,
+    "income": income,
+    "earned_income": earned_income,
+    "unearned_income": unearned_income,
+}
+print("Saved:", OUT_PATH.resolve())
+for name, df in tables.items():
+    print(f"{name:24s} {len(df):5d} rows")
+print("TOTAL ROWS:", sum(len(df) for df in tables.values()))
