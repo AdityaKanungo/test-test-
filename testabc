@@ -1,1 +1,149 @@
 
+
+Here’s a meeting-ready version you can just talk through.
+
+---
+
+### 1. Descriptive stats & EDA (what’s actually happening in the data)
+
+**What we do:**
+
+* Count referrals by GPS subcategory.
+* For every GPS subcategory, look forward 6, 12, and 24 months and calculate:
+
+  * “% of kids who ever got any CPS”
+  * “% who got a **high-severity** CPS” (using our 3-level CPS severity index we added)
+  * most common GPS → GPS sequences before CPS.
+
+**Why:**
+
+* This immediately tells us which GPS subcategories even have a CPS follow-up and which ones almost never do.
+* It also shows whether the relationship is stable across time windows (6 vs 12 vs 24 months).
+
+**How it maps to the slide:**
+
+* This is **direct evidence for BQ1** — “which, if any, GPS subcategories correlate with future CPS?”
+* We can already say in plain English: “Kids starting in GPS A go to CPS twice as often as kids in GPS B within a year.”
+
+---
+
+### 2. Baseline model (GPS → CPS odds only)
+
+**What we do:**
+
+* Run a very simple logistic model:
+
+  * outcome: CPS within 12 months (Y/N)
+  * predictors: GPS subcategory at index (+ year, + county)
+* No paths, no time-varying pieces — just “does the GPS label itself tell us anything?”
+
+**Why:**
+
+* Descriptives could be driven by geography or year; this step removes those easy explanations.
+* If a GPS subcategory is still high after we control for county/year, then it’s a *real* signal.
+
+**How it maps to the slide:**
+
+* **Strengthens BQ1** — “this subcategory correlates with future CPS even after we adjust for where and when it was reported.”
+* It’s also easy to show: one table of odds ratios / risk multipliers.
+
+---
+
+### 3. Survival analysis (time-to-CPS for 6m / 12m / 24m)
+
+**What we do:**
+
+* Build month-by-month rows after the first GPS.
+* Model the chance of CPS **this month** given it didn’t already happen (discrete-time survival).
+* Run it 3 times: 0–6 months, 0–12, 0–24.
+* Include the GPS subcategory, age, county, **and** what happened since (new GPS).
+
+**Why:**
+
+* Volume alone doesn’t tell us risk — **speed** does.
+* If 20% of kids in GPS A reach CPS in 3 months and 20% of kids in GPS B reach CPS in 18 months, those are two different policy problems.
+* Survival is the clean way to show “A escalates faster than B.”
+
+**How it maps to the slide:**
+
+* **Answers BQ2** — “do certain GPS subcategories lead to a more severe incident over time?”
+  Here “more severe over time” = “they step up to CPS faster.”
+* **Also improves BQ1** — because we can now say “this GPS correlates with CPS and it does so early.”
+
+**Bonus with the severity index we added:**
+
+* we can run the same survival on “time to **high-severity** CPS” to show which GPS subcats lead to the serious stuff, not just any CPS.
+
+---
+
+### 4. Multi-state / GPS→GPS→CPS models (path view)
+
+**What we do:**
+
+* Treat each GPS as a “state”.
+* Track how kids **move between GPS categories** before they ever show CPS.
+* Then model: given this history, **which CPS (1 of 10) shows up first, and when?**
+
+**Why:**
+
+* Your real-world note was: “one GPS can have multiple different subsequent GPS before CPS.”
+* That means the **sequence** is sometimes the signal, not just the first GPS.
+* This step is the only one that can say:
+
+  * “CSAO alone is risky, **but** CSAO → Neglect is even riskier and escalates faster.”
+  * or “Supervision → Supervision → CPS-Neglect is a very common route.”
+
+**How it maps to the slide:**
+
+* This is the **clearest piece for BQ2** because it literally shows escalation over time and across categories.
+* It also feeds back into BQ1 by telling us: “this GPS looks okay on day 1, but watch it if it changes to X.”
+
+---
+
+### 5. Special / advanced models (richer logistic / GBM)
+
+**What we do:**
+
+* Take all the features we built (index GPS, later GPS, counts, county, severity) and train a more flexible model (tree/GBM/XGBoost).
+* Predict: CPS in next 6 or 12 months.
+
+**Why:**
+
+* This gives an **operational** outcome: we can rank kids by near-term risk.
+* It also tells us which variables — first GPS vs subsequent GPS vs county vs services — have the strongest signal.
+
+**How it maps to the slide:**
+
+* **Supports BQ1** from a practical angle: “if we had to pick only 10% of cases to watch, which ones?”
+* It doesn’t replace the earlier steps — it just turns the insights into a usable score.
+
+---
+
+### 6. Statistical tests / guardrails
+
+**What we do:**
+
+* **Chi-square** on GPS × CPS to show the association isn’t random.
+* **Log-rank test** to show survival curves for two GPS groups are statistically different.
+* **Likelihood-ratio tests** to show that adding “subsequent GPS” really improves the model.
+
+**Why:**
+
+* Makes the whole story defensible — not “we eyeballed this,” but “we tested it.”
+
+**How it maps to the slide:**
+
+* **Makes both BQ1 and BQ2 defensible** — we can tell the working group: “the differences we’re showing you are statistically real, not noise.”
+
+---
+
+### So, in order, the story you can tell
+
+1. **First, we describe it** → “here’s where CPS actually happens by GPS.” (**BQ1**)
+2. **Then we prove it’s real** with a small model → “even after county/year, these GPS are still higher.” (**BQ1** stronger)
+3. **Then we put time in** → “some GPS escalate faster, some slower.” (**BQ2**)
+4. **Then we put paths in** → “it’s not just the first GPS; some GPS→GPS paths are the real escalators.” (**BQ2** clearest)
+5. **Then we make it actionable** → “here’s a score / rank of who to watch.” (**BQ1** operational)
+6. **All of it is tested** → “differences are not random.” (supports **both**)
+
+That’s the full talking version.
