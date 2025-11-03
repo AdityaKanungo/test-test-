@@ -1,1 +1,23 @@
+**Data Requirements (current dataset) – Matching & Longitudinal CPS Analysis**
+
+**1. Identity / Core Match**
+*Fields:* `First Name`, `Last Name`, `Date of Birth`, `Date of Birth Estimated`, `Social Security Number`, `Person ID`
+*Purpose:* run OCYF Match / Likely / Need Info rules and create a stable, de-duplicated child ID across referrals.
+
+**2. Household / Perpetrator Links**
+*Fields:* `Relative First/Last Name`, `Relative DOB`, `Relative SSN`, `Relative Relationship`; `Perp First/Last Name`, `Perp DOB`, `Perp DOB Estimated`, `Perp SSN`, `Perp Relationship`
+*Purpose:* confirm “same family / same caregiver / same perpetrator” so we can **keep** borderline matches the business rules allow.
+
+**3. Referral Timeline**
+*Fields:* `Referral ID`, `Referral Received Date`, `Incident Date`, `Referral Type (GPS/CPS/Supplemental)`
+*Purpose:* place events on a single child timeline to build 6-, 12- and 24-month follow-up windows.
+
+**4. Classification & Severity**
+*Fields:* `Category of Abuse`, `Subcategory of Abuse`, `Allegation validation status`, `Overall Assessment Decision`, `Accepted for Services`, `Case Closure Date`, `Case Closure Reason`
+*Purpose:* identify the starting GPS, map to CPS (10 subcategories), and derive CPS-severity to answer BQ1 and BQ2.
+
+**5. Quality / Governance**
+*Fields:* `Referral Status`, `Expunged Indicator/Date`, reporter / source fields
+*Purpose:* filter out invalid/expunged records and enable county/reporting-source cuts in results.
+
 
