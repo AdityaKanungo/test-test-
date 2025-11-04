@@ -1,1 +1,90 @@
+import pandas as pd
+import numpy as np
+
+def _snake(s):
+    return (s.strip()
+             .replace("  ", " ")
+             .replace("/", "_")
+             .replace("-", "_")
+             .replace(" ", "_")
+             .lower())
+
+def dedup_referrals(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Fixes join-explosion duplicates where the perpetrator relationship was
+    pulled from non-perp relatives. One referral can have multiple incidents
+    and victims; we preserve that grain.
+
+    Expected columns (case/spacing doesn't matter):
+      Referral ID, Incident Date, Allegation ID, Person ID (victim),
+      Relative Social Security Number, Relative First Name, Relative Last Name, Relative Date of Birth,
+      Perp Social Security Number, Perp First Name, Perp Last Name, Perp Date of Birth,
+      Relative Relationship, Perp Relationship
+    """
+
+    # 0) normalize column names
+    df = df.rename(columns={c: _snake(c) for c in df.columns}).copy()
+
+    # 1) build robust person keys (SSN preferred; fall back to name+DOB)
+    for who in ("relative", "perp"):
+        ssn  = f"{who}_social_security_number"
+        fn   = f"{who}_first_name"
+        ln   = f"{who}_last_name"
+        dob  = f"{who}_date_of_birth"
+
+        # if a column is missing, create an empty one so the code still runs
+        for col in (ssn, fn, ln, dob):
+            if col not in df:
+                df[col] = ""
+
+        df[f"{who}_key"] = (
+            df.get(ssn, "").fillna("").astype(str).str.zfill(9) + "|" +
+            df.get(fn, "").fillna("").astype(str).str.upper().str.strip() + "|" +
+            df.get(ln, "").fillna("").astype(str).str.upper().str.strip() + "|" +
+            pd.to_datetime(df.get(dob, ""), errors="coerce").dt.strftime("%Y-%m-%d").fillna("")
+        )
+
+    # 2) choose the group keys that define a unique record
+    grain = [
+        "referral_id",            # one referral can have many incidents & victims
+        "incident_date",          # keep incidents distinct
+        "allegation_id",          # and allegations within an incident
+        "person_id",              # the victim
+        "relative_key",           # the specific relative for this row
+        "perp_key"                # the specific perpetrator for this row
+    ]
+    for g in grain:
+        if g not in df:
+            df[g] = ""  # keep code resilient if a field is absent
+
+    # 3) find the TRUE perpetrator relationship from the row where perp == relative
+    same_person = df["relative_key"].eq(df["perp_key"])
+    perp_rel_true = (
+        df.loc[same_person, grain + ["relative_relationship"]]
+          .drop_duplicates(grain)
+          .rename(columns={"relative_relationship": "perp_relationship_true"})
+    )
+
+    # 4) attach and overwrite the perpetrator relationship
+    df = df.merge(perp_rel_true, on=grain, how="left")
+    if "perp_relationship" not in df:
+        df["perp_relationship"] = np.nan
+    df["perp_relationship"] = np.where(
+        df["perp_relationship_true"].notna(),
+        df["perp_relationship_true"],
+        df["perp_relationship"]
+    )
+    df = df.drop(columns=["perp_relationship_true"])
+
+    # 5) after correcting the perp relationship, duplicates collapse—drop to the natural grain
+    out = (df.sort_values(grain)
+             .drop_duplicates(subset=grain, keep="first")
+             .reset_index(drop=True))
+
+    return out
+
+# --- Example ---
+# raw = pd.read_csv("joined_export.csv")
+# clean = dedup_referrals(raw)
+# clean.to_csv("joined_export_dedup.csv", index=False)
 
