@@ -1,1 +1,150 @@
+Perfect 👍 — since you already have the raw co-occurrence matrix (like the one in your Excel screenshot) and a working Python script that builds it, here’s exactly how to extend that into normalized versions (Lift, Jaccard, and Directional proportions) — all computed cleanly in pandas.
+
+
+---
+
+🧩 Starting Point
+
+Assume your raw co-occurrence table is a pandas DataFrame called cooccur_df:
+
+Rows and columns = subcategories
+
+Values = number of times the pair co-occurs
+
+
+Example:
+
+import pandas as pd
+
+# Example structure (your actual data will come from your script)
+cooccur_df = pd.DataFrame({
+    'Inappropriate Discipline': [1622, 928, 303],
+    'Behavioral Health': [928, 1358, 1000],
+    'Clothing/Food Concerns': [303, 1000, 1561]
+}, index=['Inappropriate Discipline', 'Behavioral Health', 'Clothing/Food Concerns'])
+
+
+---
+
+⚙️ Step 1: Compute Key Totals
+
+Extract the diagonal (individual frequencies) and total number of referrals:
+
+import numpy as np
+
+# Diagonal = frequency of each subcategory
+freq = np.diag(cooccur_df)
+names = cooccur_df.index
+N = freq.sum()  # total number of single-category referrals
+
+
+---
+
+🧮 Step 2: Jaccard Index
+
+J(A,B) = \frac{n(A,B)}{n(A) + n(B) - n(A,B)}
+
+A = freq.reshape(-1, 1)
+B = freq.reshape(1, -1)
+union = A + B - cooccur_df.values
+jaccard = pd.DataFrame(cooccur_df.values / union, index=names, columns=names).fillna(0)
+
+
+---
+
+🧮 Step 3: Lift
+
+\text{Lift}(A,B) = \frac{n(A,B) * N}{n(A) * n(B)}
+
+lift = pd.DataFrame((cooccur_df.values * N) / (A * B), index=names, columns=names)
+lift.replace([np.inf, np.nan], 0, inplace=True)
+
+
+---
+
+🧮 Step 4: Directional Proportion (P(B|A))
+
+P(B|A) = \frac{n(A,B)}{n(A)}
+
+row_norm = cooccur_df.div(freq, axis=0).fillna(0)
+
+
+---
+
+📊 Step 5: View and Export
+
+You now have three normalized matrices:
+
+print("Lift Matrix:\n", lift.round(3))
+print("Jaccard Matrix:\n", jaccard.round(3))
+print("Directional Proportions (P(B|A)):\n", row_norm.round(3))
+
+Optionally export to Excel:
+
+with pd.ExcelWriter('normalized_cooccurrence.xlsx') as writer:
+    lift.to_excel(writer, sheet_name='Lift')
+    jaccard.to_excel(writer, sheet_name='Jaccard')
+    row_norm.to_excel(writer, sheet_name='Directional')
+
+
+---
+
+🔍 Step 6: Identify Disproportionately High Pairs
+
+To pull top associations (e.g., by Lift > 1.5):
+
+def top_pairs(df, metric='Lift', top_n=20):
+    upper = df.where(np.triu(np.ones(df.shape), k=1).astype(bool))
+    pairs = (
+        upper.stack()
+        .reset_index()
+        .rename(columns={'level_0': 'Subcat1', 'level_1': 'Subcat2', 0: metric})
+        .sort_values(by=metric, ascending=False)
+    )
+    return pairs.head(top_n)
+
+top_lift = top_pairs(lift, 'Lift', 20)
+top_jaccard = top_pairs(jaccard, 'Jaccard', 20)
+
+Example output:
+
+Subcat1	Subcat2	Lift
+
+Inappropriate Discipline	Behavioral Health	2.14
+Inadequate Nurturing	Failure to Protect	1.78
+Substance Use	Lack of Supervision	1.63
+
+
+
+---
+
+📈 Step 7: Visualize
+
+Simple heatmap to spot clusters:
+
+import seaborn as sns
+import matplotlib.pyplot as plt
+
+sns.heatmap(lift, cmap='coolwarm', center=1, annot=False)
+plt.title("Lift Matrix (Co-occurrence Strength)")
+plt.show()
+
+
+---
+
+✅ Interpretation Summary
+
+Metric	What it Tells You	Strong Indicator
+
+Lift	Disproportionate co-occurrence vs chance	> 1.5
+Jaccard	Fraction of overlap (symmetrical)	> 0.2
+**P(B	A)**	“Of A’s referrals, % that also have B”
+
+
+
+---
+
+Would you like me to modify your existing Python co-occurrence script (the one in your earlier screenshot) so these normalization steps fit directly into it — right after the co-occurrence matrix creation? I can rewrite it cleanly end-to-end.
+
+
 
