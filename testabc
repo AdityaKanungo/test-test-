@@ -1,1 +1,590 @@
+Perfect — here’s your **Final CWIS Matching and Longitudinal Dataset Creation Plan (English Pseudocode Version)**.
+This version keeps **all structure, logic, and detail** intact but replaces all code snippets with clear, **step-by-step English pseudocode** for data engineering and analytics handoff.
 
+---
+
+# 🧭 **CWIS Matching + Longitudinal Dataset Creation Plan**
+
+### *(Child-Level Referral–Allegation Longitudinal Model — Final Version with English Pseudocode)*
+
+---
+
+## 🔹 1. **Assumptions**
+
+1. **Referral Structure**
+
+   * One `referral_id` may include multiple **victims**.
+   * Each victim can have one or more **allegations**, and each allegation can have multiple **perpetrators**.
+   * Referrals may also include **relatives**, used only for household validation.
+
+2. **Identifiers Used for Matching**
+
+   * Matching uses **exact equality** on:
+     `first_name`, `last_name`, `date_of_birth`, `social_security_number`.
+
+3. **DOB Handling**
+
+   * If `date_of_birth_estimated` is True, treat the DOB as valid.
+   * A DOB mismatch within the *same calendar year* is allowed only when the SSN matches exactly.
+
+4. **Household / Relationship Context**
+
+   * Only **LGD (Legal Guardian)** or **PTR (Parent)** relationships validate a household-based match.
+   * Other relative roles (e.g., sibling, aunt, grandparent) do not create a valid match.
+
+5. **Matching Priority Order**
+
+   * Matches are classified in descending priority:
+     **Definite → Likely → Research → Excluded (Unlikely)**.
+   * Once a record is linked at a higher tier, lower tiers are ignored.
+
+6. **Unique Longitudinal IDs**
+
+   * Every child receives a `longitudinal_child_id`, a stable identifier across referrals.
+   * IDs are assigned deterministically using a **connected-grouping process** (e.g., Union-Find logic).
+
+---
+
+## 🔹 2. **Reference / Lookup Tables**
+
+| Table                    | Purpose                                          | Key Fields                                                                                                                                                                        | Notes                                 |
+| ------------------------ | ------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------- |
+| **`referral_raw`**       | Source CWIS data with all roles and identifiers. | `referral_id`, `person_id`, `role_code`, `first_name`, `last_name`, `date_of_birth`, `social_security_number`, `allegation_id`, `referral_type` (GPS/CPS), `perp_*`, `relative_*` | Canonical input.                      |
+| **`victim_dim`**         | Deduplicated victim registry.                    | `victim_id`, `first_name`, `last_name`, `date_of_birth`, `ssn`, `dob_estimated_flag`, `unknown_ssn_flag`, `match_key`                                                             | Created after cleaning.               |
+| **`perp_dim`**           | Perpetrator registry.                            | `perp_id`, `perp_first_name`, `perp_last_name`, `perp_dob`, `perp_ssn`, `relationship_to_victim`, `referral_id`                                                                   | Used to derive parent/guardian roles. |
+| **`relationship_table`** | Victim–relative or victim–perp relationships.    | `referral_id`, `primary_person_id`, `related_person_id`, `relationship_type`, `relationship_role_code` (LGD/PTR only)                                                             | Used for household validation.        |
+| **`match_map`**          | Pairwise comparison results.                     | `person_id_1`, `person_id_2`, `FN_match`, `LN_match`, `DOB_match`, `SSN_match`, `match_type`, `validated_by_household_flag`                                                       | Core match log.                       |
+
+---
+
+## 🔹 3. **Matching Process**
+
+### **Step 1 – Data Cleaning & Standardization**
+
+**Pseudocode:**
+
+1. Convert all first and last names to uppercase and remove extra spaces.
+2. Remove any non-numeric characters from SSN.
+3. Convert date of birth to a valid date format.
+4. Create flags:
+
+   * `dob_estimated_flag` = True if DOB is system-estimated.
+   * `unknown_ssn_flag` = True if SSN is missing.
+   * `unknown_name_flag` = True if FN or LN is blank.
+5. Ensure all records conform to a single standardized schema.
+
+---
+
+### **Step 2 – Deterministic Match Key Creation**
+
+**Pseudocode:**
+
+1. Concatenate the following fields using a delimiter (like a “|”):
+   `first_name + last_name + date_of_birth + ssn`.
+2. Store the result in a field called `match_key_exact`.
+3. Deduplicate victims using this exact key to create the `victim_dim` table.
+
+---
+
+### **Step 3 – Pairwise Comparison**
+
+**Pseudocode:**
+
+1. For each possible pair of records (within and across referrals):
+
+   * Check if first names are exactly the same → set `FN_match = Yes/No`.
+   * Check if last names are exactly the same → set `LN_match = Yes/No`.
+   * Check if DOBs are identical or one is estimated → set `DOB_match = Yes/No`.
+   * Check if SSNs are identical → set `SSN_match = Yes/No`.
+2. Store these flags in the `match_map` table.
+3. Initialize `validated_by_household_flag = False` for all pairs.
+
+---
+
+### **Step 4 – Classify Match Tiers**
+
+| Tier              | Criteria                                                                                          | Action                                          |
+| ----------------- | ------------------------------------------------------------------------------------------------- | ----------------------------------------------- |
+| **Definite**      | FN=Yes, LN=Yes, SSN=Yes, DOB=Yes or estimated                                                     | Automatically link (same child).                |
+| **Likely**        | (SSN=Yes and DOB within same year) **or** (SSN blank + FN/LN exact + validated LGD/PTR household) | Link only if validated by household.            |
+| **Research Keep** | Weak personal identifiers, but family SSN match through an LGD/PTR relative                       | Keep only if validated; mark for manual review. |
+| **Excluded**      | FN/LN mismatch or invalid household relationship                                                  | Exclude completely; move to audit log.          |
+
+---
+
+### **Step 5 – Household Validation (LGD/PTR Only)**
+
+**Pseudocode:**
+
+1. Look up each person’s relationships in the `relationship_table`.
+2. If there is a valid relationship where `relationship_role_code` is either **LGD** or **PTR**,
+   set `validated_by_household_flag = True`.
+3. Otherwise, leave `validated_by_household_flag = False`.
+4. Only consider these validated relationships for *Likely* and *Research* tier linking.
+
+---
+
+### **Step 6 – Assign Longitudinal Child IDs**
+
+**Pseudocode:**
+
+1. Start by giving every `person_id` its own temporary child group.
+2. For every pair of records in the `match_map`:
+
+   * If `match_type` is Definite, Likely, or Research Keep → merge both records into the same group.
+3. Once all merges are complete, assign one unique `longitudinal_child_id` per connected group.
+4. This ensures all appearances of the same child across referrals share one ID.
+
+---
+
+### **Step 7 – Reattach IDs to Referral Data**
+
+**Pseudocode:**
+
+* Add the `longitudinal_child_id` field to the main referral dataset by matching on `person_id`.
+* Each record (victim, allegation, etc.) now carries the stable longitudinal ID.
+
+---
+
+## 🔹 4. **Longitudinal Dataset Construction**
+
+### **Step 8 – Build the Referral–Allegation Fact Table**
+
+**Pseudocode:**
+
+1. Group records by:
+   `longitudinal_child_id`, `referral_id`, `allegation_id`, and `referral_type` (GPS/CPS).
+2. For each group:
+
+   * Take the earliest `incident_date`.
+   * Retain the first `category_of_abuse` and `subcategory_of_abuse`.
+   * Take the maximum values of `fatality_indicator` and `accepted_for_services`.
+   * Take the first `overall_assessment_decision`.
+   * Take the latest `case_closure_date`.
+3. Store results in the **`child_longitudinal_dataset`** table.
+4. Derive a new field called `service_stage`:
+
+   * If `referral_type = GPS`, then `service_stage = GPS`.
+   * Else, `service_stage = CPS`.
+
+---
+
+### **Step 9 – Attach Perpetrator & Household Details**
+
+**Pseudocode:**
+
+1. Join the longitudinal table with `perp_dim` to add perpetrator details.
+2. Join with `relationship_table` (filtered for LGD/PTR) to add household validation fields.
+3. Keep `perp_relationship_to_victim` and `validated_by_household_flag` in the output.
+
+---
+
+### **Step 10 – Create Audit and Quality Layers**
+
+**Pseudocode:**
+
+1. Save all excluded or non-matching records in `match_audit_excluded`.
+2. Save all *Research Keep* matches in `match_audit_research`.
+3. Generate summary statistics by match type and store in `match_summary_stats`.
+
+---
+
+## 🔹 5. **Final Output: `child_longitudinal_dataset`**
+
+**Granularity:** One row per *child × referral × allegation × service type.*
+
+| Column                                                 | Description                                   |
+| ------------------------------------------------------ | --------------------------------------------- |
+| `longitudinal_child_id`                                | Unique stable child identity across referrals |
+| `referral_id`                                          | Original CWIS referral identifier             |
+| `allegation_id`                                        | Allegation key                                |
+| `referral_type`                                        | Indicates GPS or CPS                          |
+| `service_stage`                                        | Derived from referral type                    |
+| `incident_date`                                        | Earliest incident date                        |
+| `category_of_abuse`, `subcategory_of_abuse`            | Allegation details                            |
+| `fatality_indicator`, `near_fatality_indicator`        | Key outcome flags                             |
+| `accepted_for_services`, `overall_assessment_decision` | Service outcomes                              |
+| `case_closure_date`, `case_closure_reason`             | Case closure details                          |
+| `perp_id`, `perp_relationship_to_victim`               | Perpetrator details                           |
+| `match_tier`                                           | Definite / Likely / Research / Excluded       |
+| `validated_by_household_flag`                          | True if LGD/PTR validated household match     |
+
+---
+
+## 🔹 6. **Handling Complex Scenarios**
+
+| Scenario                             | Challenge                                    | Resolution                                                                                         |
+| ------------------------------------ | -------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| Multiple victims per referral        | One referral has several children            | Each victim handled individually; linked only via identifiers or LGD/PTR validation.               |
+| Multiple allegations per victim      | Same child with different allegations        | Group by `[longitudinal_child_id, referral_id, allegation_id]`.                                    |
+| Multiple perpetrators per allegation | Many-to-one relationship                     | Store in `perp_dim` and link separately.                                                           |
+| Relatives (non-victims)              | Ancillary household members                  | Used only for LGD/PTR validation.                                                                  |
+| Repeated GPS/CPS referrals           | Same child appears in several service stages | Linked under same `longitudinal_child_id`; `referral_type` retained for GPS→CPS sequence analysis. |
+| Shared household members             | Cross-referral overlaps                      | Linked only when validated via LGD/PTR roles.                                                      |
+
+---
+
+## 🔹 7. **Analytical Enablement**
+
+This dataset enables:
+
+* Tracking **child trajectories** across multiple GPS and CPS referrals.
+* Conducting **hazard and survival analyses** (time to escalation).
+* Studying **repeat referral frequency**, **household recurrence**, and **perpetrator overlap**.
+* Measuring **match quality** (percent Definite/Likely/Research).
+
+---
+
+## 🔹 8. **Deliverables**
+
+1. **Primary Output:**
+   `child_longitudinal_dataset` – final analytical dataset.
+2. **Supporting Tables:**
+   `victim_dim`, `relationship_table`, `match_map`.
+3. **Audit Tables:**
+   `match_audit_excluded`, `match_audit_research`, `match_summary_stats`.
+4. **Optional Dashboard:**
+
+   * Match tier distribution
+   * Referral overlap network
+   * LGD/PTR validation rates
+
+---
+
+## ✅ **End-to-End Process Flow Summary**
+
+**Step 1** – Clean & Standardize
+→ **Step 2** – Create Deterministic Match Keys
+→ **Step 3** – Generate Pairwise Map
+→ **Step 4** – Classify Matches
+→ **Step 5** – Validate via LGD/PTR
+→ **Step 6** – Assign Longitudinal IDs
+→ **Step 7** – Aggregate Referral–Allegation Records
+→ **Step 8** – Merge Perpetrator & Household Details
+→ **Step 9** – Create Audit Layers
+→ **Step 10** – Output Longitudinal Dataset
+
+---
+
+✅ This final version:
+
+* Accurately captures all **CWIS business rules**.
+* Fully supports **multi-GPS/CPS longitudinal analysis**.
+* Uses **LGD/PTR-only** household validation.
+* Provides **transparent auditability** and **deterministic linkage** for reproducible results.
+
+---
+
+Would you like me to now generate the **PowerPoint deck (.pptx)** for this final pseudocode version — 22 slides, formatted for data handoff and presentation?
+----------------------------------------------------
+
+
+
+Perfect — here is your **final comprehensive CWIS Matching + Longitudinal Dataset Creation Framework**, written in **clear English pseudocode** and narrative form.
+
+This version is the one you can hand over directly to your data engineering or analytics team. It includes **all assumptions**, **step-by-step logic**, **reasoning for each step**, and **coverage for all match types** (Definite, Likely, Research, Excluded).
+
+---
+
+# 🧭 **CWIS Matching & Longitudinal Dataset Creation Framework (Final Version)**
+
+### *(Child-Level Referral–Allegation Longitudinal Model with English Pseudocode and Full Rationale)*
+
+---
+
+## 🔹 Assumptions
+
+The dataset comes from the Child Welfare Information System (CWIS), which records every referral as a collection of roles (victims, perpetrators, relatives).
+A single referral may contain multiple victims and multiple allegations, and each allegation may involve one or more perpetrators.
+
+There is no permanent child-level identifier that connects referrals over time. Therefore, matching must rely on personal identifiers (first name, last name, date of birth, SSN) and household information.
+
+Only exact comparisons are used—no fuzzy matching—so the process is deterministic and auditable.
+
+Dates of birth estimated by the system are considered valid. If two dates of birth differ but fall in the same calendar year **and** have the same SSN, they are treated as referring to the same child.
+
+For household validation, only Legal Guardians (LGD) and Parents (PTR) are used as valid relationship types. Other relatives (siblings, aunts, grandparents, etc.) do not validate a match because they introduce false link risk.
+
+The process follows a hierarchy of match confidence:
+
+1. **Definite Matches** — all identifiers align.
+2. **Likely Matches** — near-identical identifiers or validated by LGD/PTR relationship.
+3. **Research Matches** — weak personal identifiers but household validation present.
+4. **Excluded Matches** — identifiers conflict or are insufficient.
+
+Each child, once identified through the matching process, receives a stable **longitudinal_child_id**, which is consistent across all referrals.
+
+---
+
+## 🔹 Step 1 – Data Cleaning and Standardization
+
+**Purpose:**
+Prepare the data for deterministic matching by removing inconsistencies in case formatting and marking uncertain values.
+
+**English Pseudocode:**
+
+* For every record, convert first and last names to uppercase and remove extra spaces.
+* Remove dashes or special characters from SSNs, keeping only digits.
+* Convert the date of birth to a proper date format if possible; otherwise mark it as unknown.
+* If the system indicates the date of birth is estimated, flag it as an estimated date.
+* If SSN or name is missing, mark those fields with “unknown” indicators.
+
+**Why this matters:**
+CWIS data often contains formatting differences and partial identifiers. Without cleaning, the system would treat records that differ only in capitalization or spacing as separate individuals.
+
+---
+
+## 🔹 Step 2 – Create Deterministic Match Keys
+
+**Purpose:**
+Create a reproducible identity key that helps remove within-referral duplicates before cross-referral matching.
+
+**English Pseudocode:**
+
+* Combine first name, last name, date of birth, and SSN into a single text key, separated by a delimiter.
+* If multiple records share the same key, treat them as the same person within that referral.
+* Save one cleaned and unique record per person as the **victim dimension** table.
+
+**Why this matters:**
+CWIS referrals can contain the same person listed multiple times for different roles or allegations. Deduplication ensures that subsequent pairwise matching does not multiply identical records.
+
+---
+
+## 🔹 Step 3 – Generate Pairwise Comparisons
+
+**Purpose:**
+Compare every unique pair of individuals across referrals to determine where overlaps exist.
+
+**English Pseudocode:**
+
+* For each pair of records:
+
+  * Compare the first names and mark whether they match exactly.
+  * Compare the last names and mark whether they match exactly.
+  * Compare the dates of birth and mark whether they are the same or estimated.
+  * Compare the SSNs and mark whether they match exactly.
+  * Initially set “validated_by_household_flag” to False for all pairs.
+
+**Why this matters:**
+This step systematically evaluates all possible person-to-person comparisons. The flags generated here form the input for classification into match tiers (Definite, Likely, Research, Excluded).
+
+---
+
+## 🔹 Step 4 – Classify Match Tiers
+
+**Purpose:**
+Assign every person-to-person pair to one of the four match categories based on the combination of name, DOB, SSN, and relationship information.
+
+---
+
+### **Definite Matches**
+
+**Criteria:**
+
+* First name matches exactly.
+* Last name matches exactly.
+* SSN matches exactly.
+* Date of birth matches exactly, or the DOB is estimated but validated by SSN.
+
+**English Pseudocode:**
+
+* If first, last, DOB, and SSN all match, label as “Definite.”
+* If the DOBs differ only because one is estimated and all other identifiers match, label as “Definite.”
+
+**Rationale:**
+These are the strongest possible matches and can be linked automatically. They represent the same child across referrals.
+
+---
+
+### **Likely Matches**
+
+**Criteria:**
+
+* SSN matches but the DOB differs slightly (within the same year),
+  OR
+* SSN is blank but both names match exactly and the household validation is confirmed through LGD or PTR.
+
+**English Pseudocode:**
+
+* If the SSNs match and the DOB difference is within one calendar year, label as “Likely.”
+* If the SSN is blank but both names match exactly and there is a validated LGD/PTR household connection, label as “Likely.”
+
+**Rationale:**
+Minor DOB differences can arise from data entry errors or estimated dates. A missing SSN is acceptable if the record is validated through a guardian or parent link across referrals.
+This category captures strong matches that are not perfectly identical.
+
+---
+
+### **Research Matches**
+
+**Criteria:**
+
+* Personal identifiers are incomplete or weak (e.g., missing DOB or SSN).
+* The record is still connected to another referral through a household member (LGD or PTR) who has an exact SSN match across referrals.
+
+**English Pseudocode:**
+
+* If the identifiers are incomplete but there is a verified LGD/PTR relationship that shares an exact SSN across referrals, label as “Research Keep.”
+* If no such validation exists, exclude the record.
+
+**Rationale:**
+These are potential matches that need human review or later confirmation.
+They prevent losing children who could be connected only through consistent household structure.
+
+---
+
+### **Excluded or Unlikely Matches**
+
+**Criteria:**
+
+* First and last names do not match.
+* SSN conflicts between referrals.
+* No household validation available.
+* Relationship roles other than LGD or PTR.
+
+**English Pseudocode:**
+
+* If names clearly differ or SSNs conflict, label as “Excluded.”
+* If the SSN is missing and there is no LGD/PTR validation, label as “Excluded.”
+* If the relationship role is sibling, aunt, uncle, or grandparent, exclude.
+
+**Rationale:**
+These cases likely refer to different individuals. Keeping them separate ensures no false merges in longitudinal data.
+
+---
+
+## 🔹 Step 5 – Household Validation
+
+**Purpose:**
+Strengthen uncertain matches (Likely and Research) using household relationships.
+
+**English Pseudocode:**
+
+* For each record, check the relationship table.
+* If the related person’s role is LGD or PTR, mark the “validated_by_household_flag” as True.
+* If two referrals share the same LGD/PTR with identical SSN or name, validate those child records as being in the same household.
+
+**Why this matters:**
+Children may appear with slightly different names or DOBs but share the same parent or guardian across referrals.
+Restricting validation to LGD/PTR avoids false positives from looser household ties like cousins or siblings.
+
+---
+
+## 🔹 Step 6 – Assign Longitudinal Child IDs
+
+**Purpose:**
+Unify all related person records into stable, unique child identifiers across the entire dataset.
+
+**English Pseudocode:**
+
+* Begin with each person as their own group.
+* For each matched pair where the type is Definite, Likely, or Research Keep:
+
+  * Merge both records into the same group.
+* After processing all pairs, assign a single longitudinal_child_id to each connected group.
+
+**Why this matters:**
+This creates a permanent, consistent child identifier across multiple referrals, enabling longitudinal tracking.
+Excluded pairs are not merged, ensuring precision.
+
+---
+
+## 🔹 Step 7 – Build the Longitudinal Referral–Allegation Table
+
+**Purpose:**
+Create a unified view at the child–referral–allegation level that retains both identity continuity and service details.
+
+**English Pseudocode:**
+
+* For each longitudinal_child_id:
+
+  * Group all related records by referral ID, allegation ID, and referral type (GPS or CPS).
+  * Keep the earliest incident date, latest closure date, and the first available category/subcategory of abuse.
+  * Retain outcome fields such as accepted_for_services and overall_assessment_decision.
+  * Create a field called “service_stage” derived from referral_type (GPS or CPS).
+
+**Why this matters:**
+A child can have multiple referrals over time, and each referral can have multiple allegations. This table allows clear tracking of sequences such as “multiple GPS referrals before first CPS escalation.”
+
+---
+
+## 🔹 Step 8 – Integrate Perpetrator and Relationship Context
+
+**Purpose:**
+Preserve perpetrator and household link details for advanced analyses.
+
+**English Pseudocode:**
+
+* Join the longitudinal dataset with perpetrator data to include perpetrator IDs and relationships to the victim.
+* Join with the relationship table to add validated household links (LGD/PTR).
+
+**Why this matters:**
+This allows future analyses of repeat perpetrators, shared guardianship households, and inter-referral connections among related individuals.
+
+---
+
+## 🔹 Step 9 – Create Audit and Quality Tables
+
+**Purpose:**
+Document how each match decision was made and allow traceability.
+
+**English Pseudocode:**
+
+* Collect all excluded or unlikely matches in an audit table named “match_audit_excluded.”
+* Collect all Research Keep matches in “match_audit_research.”
+* Summarize the number of matches in each category and store results in “match_summary_stats.”
+
+**Why this matters:**
+Every record can be traced back to a decision, making the process transparent and repeatable.
+These tables help refine or tune the matching logic later without rebuilding the entire system.
+
+---
+
+## 🔹 Step 10 – Produce the Final Longitudinal Dataset
+
+**Purpose:**
+Deliver a single, structured dataset suitable for longitudinal and escalation analysis.
+
+**English Pseudocode:**
+
+* For each child-referral-allegation combination, include:
+
+  * Longitudinal child ID
+  * Referral type and service stage
+  * Allegation and abuse details
+  * Service outcomes and closure dates
+  * Perpetrator and household fields
+  * Match tier (Definite, Likely, Research, Excluded)
+  * Household validation flag
+
+**Why this matters:**
+This dataset is now ready for use in predictive modeling, GPS→CPS escalation studies, and longitudinal service outcome analysis.
+
+---
+
+## 🔹 How This Framework Covers All Match Cases
+
+* **Definite Matches:** Handles identical identifiers and minor DOB discrepancies due to estimated or system-generated values.
+* **Likely Matches:** Captures records with near-identical identifiers or validated by LGD/PTR household link.
+* **Research Matches:** Keeps plausible links where identifiers are weak but family linkage exists, ensuring no true matches are lost.
+* **Excluded Matches:** Ensures false matches do not contaminate the dataset, keeping the longitudinal chain precise.
+
+Every possible combination of name, DOB, SSN, and household role from your match logic slides (Definite, Likely, Research, Unlikely) is explicitly covered through these four classification outcomes.
+
+---
+
+## ✅ End-to-End Summary
+
+**Clean and Standardize → Create Keys → Compare Pairs → Classify Match Tier → Validate via LGD/PTR → Assign Longitudinal IDs → Build Child–Referral–Allegation Table → Integrate Perpetrator & Household Context → Audit Decisions → Deliver Final Dataset**
+
+---
+
+### In short:
+
+This final plan:
+
+* Cleans and standardizes CWIS referral-level data.
+* Deduplicates and matches individuals across time using strict, auditable rules.
+* Applies family validation where justified (LGD/PTR only).
+* Produces one stable longitudinal child identity for all GPS and CPS episodes.
+* Preserves auditability, reproducibility, and analytical readiness for escalation and outcome analysis.
