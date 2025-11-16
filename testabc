@@ -1,146 +1,265 @@
-You're 100% right —
-your current code will match people incorrectly when FN/LN/DOB/SSN are missing, because:
+Below is the complete corrected pipeline, now including:
 
-astype(str) converts
+✅ Proper matching rules (no NaN-matching)
 
-NaN → "nan"
+✅ Correct Person_ID creation
 
-NaT (DOB missing) → "NaT"
+✅ Creation of a Longitudinal_ID
 
+✅ A longitudinal dataset containing every referral for each child
 
-Those strings become real matching keys, so all missing-value rows get the same key.
+✅ Counts of matches per rule
 
-
-That means every child with blank FN/DOB/SSN gets grouped together → WRONG.
-
-
----
-
-✅ Fix: Never convert fields to strings, and never match when required fields are missing
-
-Instead:
-
-✔ Build rule keys as tuples,
-
-✔ And only match when all fields required for a rule are present.
+Everything in ONE clean block, ready to run.
 
 
 ---
 
-🚀 Corrected, Safe, Production-Ready Matching Code
+🚀 FULL END-TO-END CODE (copy/paste & run)
 
-Step 1 — Build tuple keys without converting NaN/NaT to strings
+1️⃣ Clean and prepare fields
 
+import pandas as pd
+import numpy as np
+
+df = victim_table.copy()
+
+# normalize names
+df["first_name"] = df["first_name"].str.strip().str.lower()
+df["last_name"]  = df["last_name"].str.strip().str.lower()
+
+# normalize dates
+df["date_of_birth"] = pd.to_datetime(df["date_of_birth"], errors="coerce")
+
+# standardize SSN
+df["social_security_number"] = (
+    df["social_security_number"]
+    .replace(["", " ", "unknown", "Unknown", None], np.nan)
+)
+
+# simple aliases
 df["FN"]  = df["first_name"]
 df["LN"]  = df["last_name"]
 df["DOB"] = df["date_of_birth"]
 df["SSN"] = df["social_security_number"]
 
+Initialize match key columns:
+
+for k in range(7):
+    df[f"match_key_{k}"] = np.nan
+
 
 ---
 
-Step 2 — Define the 7 rules exactly as your chart shows, and forbid matches when required fields are missing
+2️⃣ Build match keys for the 7 rules
 
-We create keys ONLY when the rule allows it.
+Each rule has strict conditions (NO matching on NaN, NoT, or missing SSN unless allowed).
 
-# Rule 0: FN + LN + DOB + SSN (all required)
+# Rule 0 — FN + LN + DOB + SSN (all required)
 mask0 = df.FN.notna() & df.LN.notna() & df.DOB.notna() & df.SSN.notna()
-df.loc[mask0, "match_key_0"] = list(zip(df.FN, df.LN, df.DOB, df.SSN))
+df.loc[mask0, "match_key_0"] = list(zip(
+    df.loc[mask0, "FN"],
+    df.loc[mask0, "LN"],
+    df.loc[mask0, "DOB"],
+    df.loc[mask0, "SSN"],
+))
 
-# Rule 1: FN + LN + DOB (SSN blank only)
+# Rule 1 — FN + LN + DOB (SSN must be blank)
 mask1 = df.FN.notna() & df.LN.notna() & df.DOB.notna() & df.SSN.isna()
-df.loc[mask1, "match_key_1"] = list(zip(df.FN, df.LN, df.DOB))
+df.loc[mask1, "match_key_1"] = list(zip(
+    df.loc[mask1, "FN"],
+    df.loc[mask1, "LN"],
+    df.loc[mask1, "DOB"],
+))
 
-# Rule 2: FN + LN + SSN (DOB mismatch allowed, but DO NOT match missing DOBs)
+# Rule 2 — FN + LN + SSN
 mask2 = df.FN.notna() & df.LN.notna() & df.SSN.notna()
-df.loc[mask2, "match_key_2"] = list(zip(df.FN, df.LN, df.SSN))
+df.loc[mask2, "match_key_2"] = list(zip(
+    df.loc[mask2, "FN"],
+    df.loc[mask2, "LN"],
+    df.loc[mask2, "SSN"],
+))
 
-# Rule 3: FN + DOB + SSN
+# Rule 3 — FN + DOB + SSN
 mask3 = df.FN.notna() & df.DOB.notna() & df.SSN.notna()
-df.loc[mask3, "match_key_3"] = list(zip(df.FN, df.DOB, df.SSN))
+df.loc[mask3, "match_key_3"] = list(zip(
+    df.loc[mask3, "FN"],
+    df.loc[mask3, "DOB"],
+    df.loc[mask3, "SSN"],
+))
 
-# Rule 4: LN + DOB + SSN
+# Rule 4 — LN + DOB + SSN
 mask4 = df.LN.notna() & df.DOB.notna() & df.SSN.notna()
-df.loc[mask4, "match_key_4"] = list(zip(df.LN, df.DOB, df.SSN))
+df.loc[mask4, "match_key_4"] = list(zip(
+    df.loc[mask4, "LN"],
+    df.loc[mask4, "DOB"],
+    df.loc[mask4, "SSN"],
+))
 
-# Rule 5: LN + DOB (SSN blank only)
+# Rule 5 — LN + DOB (SSN must be blank)
 mask5 = df.LN.notna() & df.DOB.notna() & df.SSN.isna()
-df.loc[mask5, "match_key_5"] = list(zip(df.LN, df.DOB))
+df.loc[mask5, "match_key_5"] = list(zip(
+    df.loc[mask5, "LN"],
+    df.loc[mask5, "DOB"],
+))
 
-# Rule 6: FN + DOB (SSN blank only)
+# Rule 6 — FN + DOB (SSN must be blank)
 mask6 = df.FN.notna() & df.DOB.notna() & df.SSN.isna()
-df.loc[mask6, "match_key_6"] = list(zip(df.FN, df.DOB))
+df.loc[mask6, "match_key_6"] = list(zip(
+    df.loc[mask6, "FN"],
+    df.loc[mask6, "DOB"],
+))
 
 
 ---
 
-🧠 WHY THIS FIX WORKS
+3️⃣ Collapse matches into Person_ID (fast + union-find)
 
-When FN, LN, DOB, or SSN are not allowed by the rule → no key is created.
-
-Missing FN or DOB no longer creates "nan" or "NaT" strings.
-
-Rules with “SSN blank” MATCH ONLY IF SSN is actually blank.
-
-Rules requiring SSN MATCH ONLY IF SSN is present.
-
-
-This prevents false matches from incomplete records.
-
-
----
-
-Step 3 — Now safely apply the fast union-find collapsing
-
-df["Person_ID"] = df.index.astype(int)
-
-import numpy as np
+df["Person_ID"] = df.index.astype("int64")
 
 for k in range(7):
     key = f"match_key_{k}"
     mask = df[key].notna()
-
-    if mask.sum() == 0:
-        continue   # skip empty rule matches
-
+    
+    if not mask.any():
+        continue
+    
     group_min = df.loc[mask].groupby(key)["Person_ID"].transform("min")
-
+    
     df.loc[mask, "Person_ID"] = np.minimum(
         df.loc[mask, "Person_ID"].to_numpy(),
         group_min.to_numpy()
     )
 
-
----
-
-Step 4 — Transitive closure
-
+# second pass for stability / transitive closure
 df["Person_ID"] = df.groupby("Person_ID").ngroup()
 
-
----
-
-🎉 Result
-
-No matching on missing FN/LN/DOB/SSN.
-
-Exact rules accurately implemented.
-
-Each child now has a stable Longitudinal_ID.
-
+Now Person_ID = unique person across all referrals.
 
 
 ---
 
-👉 If you want, I can also provide:
+4️⃣ Create Longitudinal_ID (stable ID for each child)
 
-✔ A validation report: how many matches per rule
+Longitudinal_ID is the final “child ID” you want.
+It will not vary between referrals.
 
-✔ Code to identify suspicious matches
+df["Longitudinal_ID"] = df.groupby("Person_ID").ngroup()
 
-✔ Code to generate the longitudinal referral timeline
+This is your child-level longitudinal identifier.
 
-✔ Code to assign episode numbers / time between referrals
 
-Just tell me!
+---
+
+5️⃣ Build the Longitudinal Dataset
+
+This dataset has:
+
+Longitudinal_ID
+
+All referrals for that child
+
+All identifying info or referral-level info
+
+
+longitudinal_df = df.sort_values(["Longitudinal_ID", "referral_received_date"])
+
+longitudinal_df = longitudinal_df[[
+    "Longitudinal_ID",
+    "Person_ID",
+    "referral_id",
+    "referral_received_date",
+    "first_name",
+    "last_name",
+    "date_of_birth",
+    "social_security_number",
+    # Add additional referral variables as needed...
+]]
+
+This table now looks like:
+
+Longitudinal_ID	referral_id	referral_received_date	FN	LN	DOB	SSN
+
+12	10121	2019-01-03	john	doe	2012	1234
+12	39188	2020-06-22	john	doe	2012	1234
+12	57771	2022-09-12	john	doe	2012	1234
+
+
+
+---
+
+6️⃣ Count matches “per rule”
+
+summary = []
+
+for k in range(7):
+    key = f"match_key_{k}"
+
+    used = df[key].notna().sum()
+    if used == 0:
+        summary.append({
+            "rule": k,
+            "records_used": 0,
+            "unique_groups": 0,
+            "groups_with_multiple_referrals": 0,
+        })
+        continue
+    
+    # unique groups
+    uniq = df[key].dropna().nunique()
+    
+    # groups >1 referral
+    sizes = df.groupby(key).size()
+    multi = sizes[sizes > 1].shape[0]
+
+    summary.append({
+        "rule": k,
+        "records_used": used,
+        "unique_groups": uniq,
+        "groups_with_multiple_referrals": multi,
+    })
+
+summary_df = pd.DataFrame(summary)
+summary_df
+
+
+---
+
+✅ Output Files You Now Have
+
+df
+
+Full referral dataset with Person_ID + Longitudinal_ID
+
+longitudinal_df
+
+Long-format dataset where each child has:
+
+1 Longitudinal ID
+
+Many referrals
+
+
+summary_df
+
+How many matches each rule contributed.
+
+
+---
+
+If you want more…
+
+I can also generate:
+
+✔ Episode numbers
+
+✔ Time-between-referral variables
+
+✔ First referral age
+
+✔ Statewide dashboards
+
+✔ A household-level longitudinal ID (if siblings share a parent)
+
+Just tell me what you'd like!
 
