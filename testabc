@@ -211,3 +211,31 @@ I can also add:
 
 Just tell me what you'd like next!
 
+def make_key(df, fields):
+    """
+    Safely create match keys.
+    Returns a 1-D object array the same length as df.
+    Tuples are assigned ONLY where all fields are non-null.
+    """
+    n = len(df)
+
+    # Mask: rows where ALL required fields are present
+    mask = np.ones(n, dtype=bool)
+    for f in fields:
+        mask &= df[f].notna()
+
+    # Initialize full-length array of None
+    key = np.empty(n, dtype=object)
+    key[:] = None
+
+    # If no rows qualify, return early
+    if not mask.any():
+        return key
+
+    # Build tuple keys for mask rows
+    tuples = [tuple(row) for row in df.loc[mask, fields].to_numpy()]
+
+    # Assign safely using a 1-D object array
+    key[mask] = np.array(tuples, dtype=object)
+
+    return key
