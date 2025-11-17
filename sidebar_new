@@ -146,3 +146,50 @@ def build_longitudinal_dataset(df):
         df[col] = df[col].str.rstrip(",")
 
     return df
+
+
+def summarize_matches(df):
+    df = df.copy()
+
+    # 1. Flags
+    df["is_matched"] = df["matched_pair"].str.len() > 0
+    df["is_likely"] = (df["matched_pair"].str.len() == 0) & (df["likely_matched_pair"].str.len() > 0)
+    df["is_unmatched"] = (df["matched_pair"].str.len() == 0) & (df["likely_matched_pair"].str.len() == 0)
+
+    # 2. Basic counts
+    total_records = len(df)
+    matched_records = df["is_matched"].sum()
+    likely_records = df["is_likely"].sum()
+    unmatched_records = df["is_unmatched"].sum()
+
+    # 3. Strong match rules breakdown
+    strong_rules = (
+        df.loc[df["is_matched"], "matched_rule"]
+        .str.split(",", expand=True)
+        .stack()
+        .value_counts()
+        .to_dict()
+    )
+
+    # 4. Likely match rules breakdown
+    likely_rules = (
+        df.loc[df["is_likely"], "likely_matched_rule"]
+        .str.split(",", expand=True)
+        .stack()
+        .value_counts()
+        .to_dict()
+    )
+
+    return {
+        "summary": {
+            "total_records": int(total_records),
+            "matched_records": int(matched_records),
+            "likely_matched_records": int(likely_records),
+            "unmatched_records": int(unmatched_records),
+            "matched_percent": round(matched_records / total_records * 100, 2),
+            "likely_percent": round(likely_records / total_records * 100, 2),
+            "unmatched_percent": round(unmatched_records / total_records * 100, 2)
+        },
+        "strong_rule_breakdown": strong_rules,
+        "likely_rule_breakdown": likely_rules
+    }
