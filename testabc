@@ -1,241 +1,95 @@
-Below is the fully corrected, production-safe, NaN-proof, and cluster-correct version of your entire pipeline.
+def is_blank(x):
+    return (x is None) or (x == "") or (str(x).strip() == "")
+def matches(r1, r2):
+    fn1, ln1, dob1, ssn1 = r1
+    fn2, ln2, dob2, ssn2 = r2
 
-✅ No accidental matches
-✅ No NaN/NaT string contamination
-✅ No matching on DOB only
-✅ No incorrect merges
-✅ True connected-components logic (graph-based)
-✅ Definite matches only come from your 7 exact rules
-✅ Every referral gets exactly 1 Longitudinal_ID
+    # Exact match
+    if (
+        fn1 == fn2 and 
+        ln1 == ln2 and 
+        dob1 == dob2 and 
+        ssn1 == ssn2
+    ):
+        return True
 
+    # Required: SSN must match for ALL other rules
+    if ssn1 != ssn2:
+        return False
 
----
+    # 7 strict rules (6 imperfect + 1 exact already handled)
+    rules = [
+        # Rule 1: FN Yes, LN Yes, DOB No, SSN Yes
+        fn1 == fn2 and ln1 == ln2 and dob1 != dob2,
 
-🚀 FINAL COMPLETE PIPELINE (100% CORRECTED)
+        # Rule 2: FN Yes, LN No, DOB Yes, SSN Yes
+        fn1 == fn2 and ln1 != ln2 and dob1 == dob2,
 
-0️⃣ Setup
+        # Rule 3: FN No, LN Yes, DOB Yes, SSN Yes
+        fn1 != fn2 and ln1 == ln2 and dob1 == dob2,
+
+        # Rule 4: FN No, LN Yes, DOB Blank, SSN Yes
+        fn1 != fn2 and ln1 == ln2 and is_blank(dob1),
+
+        # Rule 5: FN No, LN No, DOB Yes, SSN Yes
+        fn1 != fn2 and ln1 != ln2 and dob1 == dob2,
+
+        # Rule 6: FN Yes, LN No, DOB Blank, SSN Yes
+        fn1 == fn2 and ln1 != ln2 and is_blank(dob1)
+    ]
+
+    return any(rules)
+
 
 import pandas as pd
-import numpy as np
 import networkx as nx
 
-
----
-
-1️⃣ Clean the identifying fields
-
-df = victim_table.copy()
-
-df["FN"]  = df["first_name"].str.lower().str.strip()
-df["LN"]  = df["last_name"].str.lower().str.strip()
-df["DOB"] = pd.to_datetime(df["date_of_birth"], errors="coerce")
-df["SSN"] = df["social_security_number"].replace(["", " ", "unknown", None], np.nan)
-
-
----
-
-2️⃣ Safe match-key generator (NEVER matches on missing fields)
-
-🔥 THIS is what fixes your incorrect clusters
-
-def make_key(df, fields):
-    """
-    fields = list of column names such as ["FN", "LN", "DOB"]
-    This function:
-    1. Ensures ALL required fields exist (not NaN)
-    2. Generates tuple keys ONLY for rows where rule conditions are satisfied
-    3. Returns an array of keys, None for all non-qualifying rows
-    """
-    mask = np.ones(len(df), dtype=bool)
-    for f in fields:
-        mask &= df[f].notna()
-
-    key = np.full(len(df), None, dtype=object)
-    if mask.any():
-        key[mask] = list(zip(*(df.loc[mask, f] for f in fields)))
-
-    return key
-
-
----
-
-3️⃣ Build match keys for the 7 rules
-
-✔ EXACTLY matches your table
-
-✔ Never creates keys for incomplete data
-
-✔ Prevents FN/LN/DOB/SSN = NaN from matching
-
-df["match_key_0"] = make_key(df, ["FN", "LN", "DOB", "SSN"])
-df["match_key_1"] = make_key(df, ["FN", "LN", "DOB"])
-df["match_key_2"] = make_key(df, ["FN", "LN", "SSN"])
-df["match_key_3"] = make_key(df, ["FN", "DOB", "SSN"])
-df["match_key_4"] = make_key(df, ["LN", "DOB", "SSN"])
-df["match_key_5"] = make_key(df, ["LN", "DOB"])
-df["match_key_6"] = make_key(df, ["FN", "DOB"])
-
-NOW your weird DOB=2021-08-01 cluster problem is fixed.
-If FN and LN are NaN, NONE of these rules fire.
-
-
----
-
-4️⃣ Build pairwise match table (definite matches only)
-
-pair_list = []
-
-for k in range(7):
-    key = f"match_key_{k}"
-    tmp = df[df[key].notna()][["referral_id", key]]
-
-    # Each rule generates connected pairs within the group
-    merged = tmp.merge(tmp, on=key)
-    merged = merged[merged["referral_id_x"] < merged["referral_id_y"]]
-
-    merged["rule"] = k
-    merged["match_type"] = "definite_match"
-
-    pair_list.append(
-        merged[["referral_id_x", "referral_id_y", "rule", "match_type"]]
-    )
-
-pairs = pd.concat(pair_list, ignore_index=True).drop_duplicates()
-
-
----
-
-5️⃣ Compute connected components (TRUE longitudinal IDs)
-
-This is the correct identity resolution method
-
-No false merges, no corruption, no min-collapse problems
-
-G = nx.Graph()
-
-# Add nodes for all referrals
-G.add_nodes_from(df["referral_id"].tolist())
-
-# Add "definite match" edges
-G.add_edges_from(
-    pairs[["referral_id_x", "referral_id_y"]].itertuples(index=False, name=None)
-)
-
-# Extract connected components
-components = list(nx.connected_components(G))
-
-# Map referral → Longitudinal_ID
-referral_to_longid = {}
-for long_id, comp in enumerate(components):
-    for rid in comp:
-        referral_to_longid[rid] = long_id
-
-df["Longitudinal_ID"] = df["referral_id"].map(referral_to_longid)
-
-✔ Every referral is assigned a Longitudinal_ID
-
-✔ All definite matches share the same one
-
-✔ Non-matches = singleton groups
-
-✔ No accidental merging
-
-
----
-
-6️⃣ Build final longitudinal dataset
-
-longitudinal_df = df.sort_values(
-    ["Longitudinal_ID", "referral_received_date"]
-)[[
-    "Longitudinal_ID",
-    "referral_id",
-    "referral_received_date",
-    "first_name",
-    "last_name",
-    "date_of_birth",
-    "social_security_number"
-]]
-
-
----
-
-🎉 This version fixes ALL your problems
-
-The following issues are now completely resolved:
-
-Issue	Status
-
-Matching when FN/LN are NaN	❌ FIXED
-Matching only on DOB	❌ FIXED
-Strange giant clusters	❌ FIXED
-Min-collapse incorrect merges	❌ FIXED
-Transitive matching errors	❌ FIXED
-Unstable Person_ID	❌ FIXED
-Wrong Longitudinal_ID	❌ FIXED
-
-
-And you now get:
-
-100% accurate match rules
-
-100% correct cluster logic
-
-Proper connected components
-
-Fast runtime
-
-Clean longitudinal IDs
-
-Correct pairs dataframe
-
-
-
----
-
-Want optional upgrades?
-
-I can also add:
-
-✔ A debugging tool that shows “why these referrals were connected”
-
-✔ Suspicious cluster detection (clusters where names completely disagree)
-
-✔ Time-between-referrals per child
-
-✔ Episode creation
-
-✔ First referral per Longitudinal_ID
-
-✔ Household-level ID (based on parent_id)
-
-Just tell me what you'd like next!
-
-def make_key(df, fields):
-    """
-    Safely create match keys.
-    Returns a 1-D object array the same length as df.
-    Tuples are assigned ONLY where all fields are non-null.
-    """
-    n = len(df)
-
-    # Mask: rows where ALL required fields are present
-    mask = np.ones(n, dtype=bool)
-    for f in fields:
-        mask &= df[f].notna()
-
-    # Initialize full-length array of None
-    key = np.empty(n, dtype=object)
-    key[:] = None
-
-    # If no rows qualify, return early
-    if not mask.any():
-        return key
-
-    # Build tuple keys for mask rows
-    tuples = [tuple(row) for row in df.loc[mask, fields].to_numpy()]
-
-    # Assign safely using a 1-D object array
-    key[mask] = np.array(tuples, dtype=object)
-
-    return key
+def build_longitudinal_dataset(df):
+    df = df.copy()
+    df["LONG_PERSON_ID"] = None
+    next_id = 1
+
+    # Group by SSN (mandatory: SSN must match to match at all)
+    ssn_groups = df.groupby("SSN")
+
+    for ssn, group in ssn_groups:
+        indices = list(group.index)
+
+        # -----------------------------------------
+        # CASE 1: Blank SSN → cannot match anyone
+        # -----------------------------------------
+        if is_blank(ssn):
+            for idx in indices:
+                df.loc[idx, "LONG_PERSON_ID"] = next_id
+                next_id += 1
+            continue
+
+        # -----------------------------------------
+        # CASE 2: SSN is valid → run match logic within block
+        # -----------------------------------------
+        G = nx.Graph()
+        G.add_nodes_from(indices)
+
+        for i in range(len(indices)):
+            for j in range(i + 1, len(indices)):
+                idx1 = indices[i]
+                idx2 = indices[j]
+
+                r1 = df.loc[idx1, ["FIRST_NAME", "LAST_NAME", "DOB", "SSN"]]
+                r2 = df.loc[idx2, ["FIRST_NAME", "LAST_NAME", "DOB", "SSN"]]
+
+                if matches(tuple(r1), tuple(r2)):
+                    G.add_edge(idx1, idx2)
+
+        # Connected components = unique people
+        for component in nx.connected_components(G):
+            for idx in component:
+                df.loc[idx, "LONG_PERSON_ID"] = next_id
+            next_id += 1
+
+    return df
+
+
+df_long = build_longitudinal_dataset(df)
+
+df_long.to_csv("referrals_longitudinal.csv", index=False)
