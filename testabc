@@ -3,42 +3,14 @@ from collections import defaultdict
 from itertools import combinations
 
 # -------------------------------------------------------------------
-# Helper functions (same as you already have)
+# union–find (for strong matches and for likely match propagation)
 # -------------------------------------------------------------------
-
-def is_blank(x):
-    import pandas as pd
-    if pd.isna(x):
-        return True
-    if isinstance(x, str) and x.strip() == "":
-        return True
-    return False
-
-def nonblank_equal(a, b):
-    return (a == b) and (not is_blank(a)) and (not is_blank(b))
-
-def nonblank_not_equal(a, b):
-    return (a != b) and (not is_blank(a)) and (not is_blank(b))
-
-# -------------------------------------------------------------------
-# Your match_rule(r1, r2) and likely_match_rule(r1, r2) go here
-# (copy them from your notebook unchanged)
-# -------------------------------------------------------------------
-# def match_rule(r1, r2): ...
-# def likely_match_rule(r1, r2): ...
-
-
-# -------------------------------------------------------------------
-# Fast union–find (disjoint set) for grouping matches
-# -------------------------------------------------------------------
-
 class DisjointSet:
     def __init__(self, n):
         self.parent = list(range(n))
         self.rank = [0] * n
 
     def find(self, x):
-        # path compression
         while self.parent[x] != x:
             self.parent[x] = self.parent[self.parent[x]]
             x = self.parent[x]
@@ -48,7 +20,6 @@ class DisjointSet:
         pa, pb = self.find(a), self.find(b)
         if pa == pb:
             return
-        # union by rank
         if self.rank[pa] < self.rank[pb]:
             pa, pb = pb, pa
         self.parent[pb] = pa
@@ -57,57 +28,44 @@ class DisjointSet:
 
 
 # -------------------------------------------------------------------
-# Optimized main function
+# MAIN FUNCTION with Option B implemented
 # -------------------------------------------------------------------
-
 def build_longitudinal_dataset(df):
-    """
-    Optimized version of your function.
-
-    - Uses union–find instead of networkx
-    - Avoids df.loc[...] inside loops
-    - Uses dictionary-based blocking instead of df.merge(df, ...)
-    - Preserves your existing match / likely match logic
-    """
 
     df = df.copy()
     n = len(df)
 
-    # Stable row ids
+    # Assign a stable row index
     df["ROW_ID"] = np.arange(n, dtype=int)
 
-    # Ensure output columns exist
-    for col in ["LONG_PERSON_ID",
-                "matched_pair", "matched_rule",
-                "likely_matched_pair", "likely_matched_rule"]:
+    # Ensure required columns exist
+    for col in ["matched_pair", "matched_rule", 
+                "likely_matched_pair", "likely_matched_rule",
+                "LONG_PERSON_ID"]:
         if col not in df.columns:
-            df[col] = "" if "pair" in col or "rule" in col else -1
+            df[col] = ""
 
-    # Pull columns into NumPy arrays for fast indexed access
+    # NumPy arrays (fast)
     FN  = df["FN"].to_numpy(object)
     LN  = df["LN"].to_numpy(object)
-    DOB = df["DOB"].to_numpy(object)   # can be datetime.date or NaT
+    DOB = df["DOB"].to_numpy(object)
     SSN = df["SSN"].to_numpy(object)
-
-    # Adjust this if your id column has a different name
     ref_ids = df["referral_id"].to_numpy(object)
 
     matched_pair  = df["matched_pair"].to_numpy(object)
     matched_rule  = df["matched_rule"].to_numpy(object)
     likely_pair   = df["likely_matched_pair"].to_numpy(object)
     likely_rule   = df["likely_matched_rule"].to_numpy(object)
-    long_person   = df["LONG_PERSON_ID"].to_numpy(int)
+    long_person   = df["LONG_PERSON_ID"].to_numpy(object)
 
     # ----------------------------------------------------------------
-    # 1. Strong matches – group via SSN, union sets using match_rule
+    # 1) Strong Matches (SSN) — union–find for LONG_PERSON_ID
     # ----------------------------------------------------------------
-
     dsu = DisjointSet(n)
 
-    # Group indices by SSN (excluding blank SSN, as in your code)
     ssn_groups = defaultdict(list)
     for i, ssn in enumerate(SSN):
-        if not is_blank(ssn):
+        if ssn and str(ssn).strip() != "":
             ssn_groups[ssn].append(i)
 
     for ssn, idxs in ssn_groups.items():
@@ -117,40 +75,33 @@ def build_longitudinal_dataset(df):
         for i, j in combinations(idxs, 2):
             r1 = (FN[i], LN[i], DOB[i], SSN[i])
             r2 = (FN[j], LN[j], DOB[j], SSN[j])
-
             rule = match_rule(r1, r2)
+
             if rule is None:
                 continue
 
-            i_ref = ref_ids[i]
-            j_ref = ref_ids[j]
+            # Record matched pairs
+            matched_pair[i] += f"{ref_ids[j]};"
+            matched_rule[i] += f"{rule};"
+            matched_pair[j] += f"{ref_ids[i]};"
+            matched_rule[j] += f"{rule};"
 
-            # update matched_pair / matched_rule (append with ";")
-            matched_pair[i] = f"{matched_pair[i]}{j_ref};"
-            matched_rule[i] = f"{matched_rule[i]}{rule};"
-
-            matched_pair[j] = f"{matched_pair[j]}{i_ref};"
-            matched_rule[j] = f"{matched_rule[j]}{rule};"
-
-            # union in disjoint set
+            # Union strong matches
             dsu.union(i, j)
 
-    # Assign LONG_PERSON_ID based on connected components
-    root_to_personid = {}
+    # Assign LONG_PERSON_ID
+    root_to_id = {}
     next_id = 1
     for i in range(n):
         root = dsu.find(i)
-        if root not in root_to_personid:
-            root_to_personid[root] = next_id
+        if root not in root_to_id:
+            root_to_id[root] = next_id
             next_id += 1
-        long_person[i] = root_to_personid[root]
-
-    df["LONG_PERSON_ID"] = long_person
+        long_person[i] = root_to_id[root]
 
     # ----------------------------------------------------------------
-    # 2. Likely matches – blocking without expensive self-joins
+    # 2) Likely Matches (block-based)
     # ----------------------------------------------------------------
-
     blocks = [
         ["FN", "LN", "DOB"],
         ["FN", "LN"],
@@ -158,53 +109,89 @@ def build_longitudinal_dataset(df):
         ["LN", "DOB"],
     ]
 
-    pairs_seen = set()  # to avoid duplicate comparisons across blocks
+    pairs_seen = set()
+    likely_edges = []     # store (i, j, rule) to later propagate transitively
 
     for cols in blocks:
-        # Build key -> [indices] groups for this block
         key_arrays = [df[c].to_numpy(object) for c in cols]
+
         groups = defaultdict(list)
         for i in range(n):
             key = tuple(arr[i] for arr in key_arrays)
             groups[key].append(i)
 
-        # Within each block, compare all pairs
         for idxs in groups.values():
             if len(idxs) < 2:
                 continue
-
             for i, j in combinations(idxs, 2):
                 if i > j:
-                    i, j = j, i  # canonical order
-                pair_key = (i, j)
-                if pair_key in pairs_seen:
+                    i, j = j, i
+
+                if (i, j) in pairs_seen:
                     continue
-                pairs_seen.add(pair_key)
+                pairs_seen.add((i, j))
 
                 r1 = (FN[i], LN[i], DOB[i], SSN[i])
                 r2 = (FN[j], LN[j], DOB[j], SSN[j])
-
                 rule = likely_match_rule(r1, r2)
+
                 if rule is None:
                     continue
 
-                i_ref = ref_ids[i]
-                j_ref = ref_ids[j]
+                # Record direct likely match
+                likely_pair[i] += f"{ref_ids[j]};"
+                likely_rule[i] += f"{rule};"
+                likely_pair[j] += f"{ref_ids[i]};"
+                likely_rule[j] += f"{rule};"
 
-                likely_pair[i] = f"{likely_pair[i]}{j_ref};"
-                likely_rule[i] = f"{likely_rule[i]}{rule};"
-
-                likely_pair[j] = f"{likely_pair[j]}{i_ref};"
-                likely_rule[j] = f"{likely_rule[j]}{rule};"
+                likely_edges.append((i, j, rule))
 
     # ----------------------------------------------------------------
-    # 3. Clean up trailing semicolons and push arrays back to df
+    # 3) OPTION B — Likely Match Transitive Propagation
     # ----------------------------------------------------------------
+    # Build a second union–find just for likely match components
+    dsu_likely = DisjointSet(n)
 
-    df["matched_pair"]         = np.char.rstrip(matched_pair.astype(str),  ";")
-    df["matched_rule"]         = np.char.rstrip(matched_rule.astype(str),  ";")
-    df["likely_matched_pair"]  = np.char.rstrip(likely_pair.astype(str),   ";")
-    df["likely_matched_rule"]  = np.char.rstrip(likely_rule.astype(str),   ";")
-    df["LONG_PERSON_ID"]       = long_person
+    for i, j, rule in likely_edges:
+        dsu_likely.union(i, j)
+
+    # Build clusters: root → list of indices
+    likely_clusters = defaultdict(list)
+    for i in range(n):
+        root = dsu_likely.find(i)
+        likely_clusters[root].append(i)
+
+    # For each cluster, generate full pairwise closure
+    for root, idxs in likely_clusters.items():
+        if len(idxs) < 3:
+            continue   # no need to add closure for 1–2 items
+
+        for i, j in combinations(idxs, 2):
+            i_ref = ref_ids[i]
+            j_ref = ref_ids[j]
+
+            # Avoid double-appending
+            if f"{j_ref};" not in likely_pair[i]:
+                likely_pair[i] += f"{j_ref};"
+            if f"{i_ref};" not in likely_pair[j]:
+                likely_pair[j] += f"{i_ref};"
+
+            # Use special rule code to indicate "transitive likely match"
+            # You can change this if you want
+            if "TRANS" not in likely_rule[i]:
+                likely_rule[i] += "TRANS;"
+            if "TRANS" not in likely_rule[j]:
+                likely_rule[j] += "TRANS;"
+
+    # ----------------------------------------------------------------
+    # 4) Clean output columns
+    # ----------------------------------------------------------------
+    trim = lambda arr: np.char.rstrip(arr.astype(str), ";")
+
+    df["matched_pair"] = trim(matched_pair)
+    df["matched_rule"] = trim(matched_rule)
+    df["likely_matched_pair"] = trim(likely_pair)
+    df["likely_matched_rule"] = trim(likely_rule)
+    df["LONG_PERSON_ID"] = long_person
 
     return df
