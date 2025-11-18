@@ -1,1 +1,225 @@
+import pandas as pd
+import numpy as np
+import networkx as nx
+from itertools import combinations
+
+
+# ---------------------------
+# Helper Functions
+# ---------------------------
+
+def is_blank(x):
+    if pd.isna(x):
+        return True
+    return (
+        x is None
+        or str(x).strip() == ""
+        or str(x).strip() == "nan"
+        or str(x).strip().upper() == "NAT"
+    )
+
+
+def nonblank_equal(a, b):
+    return (a == b) and (not is_blank(a)) and (not is_blank(b))
+
+
+def nonblank_not_equal(a, b):
+    return (a != b) and (not is_blank(a)) and (not is_blank(b))
+
+
+# ---------------------------
+# Strong Match Rules
+# ---------------------------
+
+def match_rule(r1, r2):
+    fn1, ln1, dob1, ssn1 = r1
+    fn2, ln2, dob2, ssn2 = r2
+
+    # Rule 0 – Exact
+    if (nonblank_equal(fn1, fn2) 
+        and nonblank_equal(ln1, ln2) 
+        and nonblank_equal(dob1, dob2) 
+        and nonblank_equal(ssn1, ssn2)):
+        return 0
+
+    # SSN must match for strong rules
+    if not nonblank_equal(ssn1, ssn2):
+        return None
+
+    if (nonblank_equal(fn1, fn2)
+        and nonblank_equal(ln1, ln2)
+        and dob1 != dob2
+        and not is_blank(dob1) and not is_blank(dob2)):
+        return 1
+
+    if (nonblank_equal(fn1, fn2)
+        and nonblank_not_equal(ln1, ln2)
+        and nonblank_equal(dob1, dob2)):
+        return 2
+
+    if (nonblank_not_equal(fn1, fn2)
+        and nonblank_equal(ln1, ln2)
+        and nonblank_equal(dob1, dob2)):
+        return 3
+
+    if (nonblank_not_equal(fn1, fn2)
+        and nonblank_equal(ln1, ln2)
+        and (is_blank(dob1) or is_blank(dob2))):
+        return 4
+
+    if (nonblank_not_equal(fn1, fn2)
+        and nonblank_not_equal(ln1, ln2)
+        and nonblank_equal(dob1, dob2)):
+        return 5
+
+    if (nonblank_equal(fn1, fn2)
+        and nonblank_not_equal(ln1, ln2)
+        and (is_blank(dob1) or is_blank(dob2))):
+        return 6
+
+    return None
+
+
+# ---------------------------
+# Likely Match Rules (unchanged)
+# ---------------------------
+
+def likely_match_rule(r1, r2):
+    fn1, ln1, dob1, ssn1 = r1
+    fn2, ln2, dob2, ssn2 = r2
+
+    if (nonblank_not_equal(fn1, fn2)
+        and nonblank_equal(ln1, ln2)
+        and nonblank_not_equal(dob1, dob2)
+        and nonblank_equal(ssn1, ssn2)):
+        return "7"
+
+    if (nonblank_equal(fn1, fn2)
+        and nonblank_not_equal(ln1, ln2)
+        and nonblank_not_equal(dob1, dob2)
+        and nonblank_equal(ssn1, ssn2)):
+        return "8"
+
+    if (nonblank_equal(fn1, fn2)
+        and nonblank_not_equal(ln1, ln2)
+        and nonblank_equal(dob1, dob2)
+        and (is_blank(ssn1) or is_blank(ssn2))):
+        return "9"
+
+    if (nonblank_not_equal(fn1, fn2)
+        and nonblank_equal(ln1, ln2)
+        and nonblank_equal(dob1, dob2)
+        and (is_blank(ssn1) or is_blank(ssn2))):
+        return "10"
+
+    if (nonblank_not_equal(fn1, fn2)
+        and nonblank_equal(ln1, ln2)
+        and nonblank_not_equal(dob1, dob2)
+        and (is_blank(ssn1) or is_blank(ssn2))):
+        return "11"
+
+    if (nonblank_equal(fn1, fn2)
+        and nonblank_equal(ln1, ln2)
+        and nonblank_equal(dob1, dob2)
+        and (is_blank(ssn1) or is_blank(ssn2))):
+        return "12"
+
+    return None
+
+
+# ---------------------------
+# Optimized Longitudinal Dataset Builder
+# ---------------------------
+
+def build_longitudinal_dataset(df):
+    
+    df = df.copy()
+    df["LONG_PERSON_ID"] = None
+    df["matched_pair"] = ""
+    df["matched_rule"] = ""
+    df["likely_matched_pair"] = ""
+    df["likely_matched_rule"] = ""
+    
+    next_id = 1
+
+    # -------------------------
+    # Strong matches (same as before)
+    # -------------------------
+    ssn_groups = df.groupby("SSN")
+    for ssn, group in ssn_groups:
+        idxs = list(group.index)
+
+        if is_blank(ssn):
+            for idx in idxs:
+                df.loc[idx, "LONG_PERSON_ID"] = next_id
+                next_id += 1
+            continue
+
+        G = nx.Graph()
+        G.add_nodes_from(idxs)
+
+        # Compare only within SSN group
+        for i, j in combinations(idxs, 2):
+            r1 = tuple(df.loc[i, ["FN", "LN", "DOB", "SSN"]])
+            r2 = tuple(df.loc[j, ["FN", "LN", "DOB", "SSN"]])
+
+            rule = match_rule(r1, r2)
+            if rule is not None:
+                G.add_edge(i, j)
+                df.at[i, "matched_pair"] += f"{df.loc[j, 'referral_id']},"
+                df.at[j, "matched_pair"] += f"{df.loc[i, 'referral_id']},"
+                df.at[i, "matched_rule"] += f"{rule},"
+                df.at[j, "matched_rule"] += f"{rule},"
+
+        for comp in nx.connected_components(G):
+            for idx in comp:
+                df.loc[idx, "LONG_PERSON_ID"] = next_id
+            next_id += 1
+
+    # -------------------------
+    # Optimized LIKELY MATCHES
+    # -------------------------
+
+    # Blocking keys
+    blocks = [
+        ["FN"], ["LN"], ["DOB"],
+        ["FN", "LN"], ["FN", "DOB"], ["LN", "DOB"]
+    ]
+
+    pairs_seen = set()
+
+    for cols in blocks:
+
+        merged = df.merge(df, on=cols, suffixes=("_1", "_2"))
+        merged = merged[merged.index_1 < merged.index_2]
+
+        for _, row in merged.iterrows():
+
+            idx1, idx2 = row["index_1"], row["index_2"]
+
+            if (idx1, idx2) in pairs_seen:
+                continue
+            
+            pairs_seen.add((idx1, idx2))
+
+            t1 = tuple(df.loc[idx1, ["FN", "LN", "DOB", "SSN"]])
+            t2 = tuple(df.loc[idx2, ["FN", "LN", "DOB", "SSN"]])
+
+            rule = likely_match_rule(t1, t2)
+            if rule is not None:
+                df.at[idx1, "likely_matched_pair"] += f"{df.loc[idx2,'referral_id']},"
+                df.at[idx2, "likely_matched_pair"] += f"{df.loc[idx1,'referral_id']},"
+                df.at[idx1, "likely_matched_rule"] += f"{rule},"
+                df.at[idx2, "likely_matched_rule"] += f"{rule},"
+
+    # Cleanup
+    for col in ["matched_pair", "matched_rule", "likely_matched_pair", "likely_matched_rule"]:
+        df[col] = df[col].str.rstrip(",")
+
+    return df
+
+
+what will be output of this code if the data is this:
+
+FN|LN|DOB|SSN A|B|01/12/2001|123 A|B|01/12/2001|nan D|A|01/12/2001|123 A|C|01/12/2001|123 C|B|01/12/2003|nan
 
