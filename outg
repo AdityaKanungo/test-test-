@@ -1,16 +1,51 @@
-def debug_rule_preconditions(df):
-    FN = df["FN"].to_numpy(object)
-    LN = df["LN"].to_numpy(object)
+from collections import defaultdict
+from itertools import combinations
+
+def get_rule_candidates(df):
+    FN  = df["FN"].to_numpy(object)
+    LN  = df["LN"].to_numpy(object)
     DOB = df["DOB"].to_numpy(object)
     SSN = df["SSN"].to_numpy(object)
+    DOB_EST = df["date_of_birth_estimated"].to_numpy(object)
 
-    total_pairs = 0
-    cond7 = cond8 = cond11 = 0
+    # helper
+    def is_blank(x):
+        import pandas as pd
+        if pd.isna(x): return True
+        if isinstance(x, str) and x.strip()=="":
+            return True
+        return False
 
-    # only check pairs that appear in blocking (exactly as your algorithm does)
-    from collections import defaultdict
-    from itertools import combinations
+    # strong rule DOB logic — same as your matching code
+    def strong_dob_compare(d1, d2, est1, est2):
+        d1_blank = is_blank(d1)
+        d2_blank = is_blank(d2)
+        if d1_blank or d2_blank: 
+            return (False, False, False)   # match, mismatch, comparable=False
 
+        # estimated? → not comparable
+        if est1=="Y" or est2=="Y":
+            return (False, False, False)
+
+        # comparable actual DOBs
+        if d1 == d2:
+            return (True, False, True)
+        else:
+            return (False, True, True)
+
+    # likely rule DOB logic — EST ignored
+    def likely_dob_compare(d1, d2):
+        if is_blank(d1) or is_blank(d2):
+            return (False, False)
+        if d1 == d2:
+            return (True, False)
+        else:
+            return (False, True)
+
+    # initialize counters
+    counts = {str(i): 0 for i in range(13)}  # rules 0–12
+
+    # blocking logic (same as your code)
     blocks = [
         ["FN", "LN", "DOB"],
         ["FN", "LN"],
@@ -19,50 +54,100 @@ def debug_rule_preconditions(df):
     ]
 
     seen = set()
+    total_pairs = 0
 
     for cols in blocks:
         keys = [df[c].to_numpy(object) for c in cols]
         groups = defaultdict(list)
 
+        # assign to groups
         for i in range(len(df)):
-            k = tuple(k[i] for k in keys)
+            k = tuple(arr[i] for arr in keys)
             groups[k].append(i)
 
+        # compare pairs within blocks
         for idxs in groups.values():
             if len(idxs) < 2:
                 continue
 
-            for i,j in combinations(idxs,2):
+            for i, j in combinations(idxs, 2):
+
                 if (i,j) in seen:
                     continue
                 seen.add((i,j))
-
                 total_pairs += 1
 
-                fn1, fn2 = FN[i], FN[j]
-                ln1, ln2 = LN[i], LN[j]
-                dob1, dob2 = DOB[i], DOB[j]
-                ssn1, ssn2 = SSN[i], SSN[j]
+                fn1, ln1, dob1, ssn1, est1 = FN[i], LN[i], DOB[i], SSN[i], DOB_EST[i]
+                fn2, ln2, dob2, ssn2, est2 = FN[j], LN[j], DOB[j], SSN[j], DOB_EST[j]
 
-                # evaluate preconditions
+                # -------- STRONG RULE DOB LOGIC --------
+                dob_match_s, dob_ne_s, dob_comp_s = strong_dob_compare(dob1, dob2, est1, est2)
 
-                # Rule 7: FN≠, LN=, DOB≠, SSN=
-                if fn1 != fn2 and ln1 == ln2 and dob1 != dob2 and ssn1 == ssn2 and not is_blank(dob1) and not is_blank(dob2):
-                    cond7 += 1
+                # -------- LIKELY RULE DOB LOGIC --------
+                dob_match_l, dob_ne_l = likely_dob_compare(dob1, dob2)
 
-                # Rule 8: FN=, LN≠, DOB≠, SSN=
-                if fn1 == fn2 and ln1 != ln2 and dob1 != dob2 and ssn1 == ssn2 and not is_blank(dob1) and not is_blank(dob2):
-                    cond8 += 1
+                # ======================================
+                # STRONG MATCH RULES 0–6
+                # ======================================
 
-                # Rule 11: FN≠, LN=, DOB≠, SSN blank
-                if fn1 != fn2 and ln1 == ln2 and dob1 != dob2 and (is_blank(ssn1) or is_blank(ssn2)) and not is_blank(dob1) and not is_blank(dob2):
-                    cond11 += 1
+                # Rule 0
+                if fn1 == fn2 and ln1 == ln2 and dob_match_s and ssn1 == ssn2:
+                    counts["0"] += 1
 
-    return {
-        "total_pairs_examined": total_pairs,
-        "rule7_candidates": cond7,
-        "rule8_candidates": cond8,
-        "rule11_candidates": cond11
-    }
+                # Rule 1
+                if fn1 == fn2 and ln1 == ln2 and dob_ne_s and ssn1 == ssn2:
+                    counts["1"] += 1
 
-debug_rule_preconditions(df)
+                # Rule 2
+                if fn1 == fn2 and ln1 != ln2 and dob_match_s and ssn1 == ssn2:
+                    counts["2"] += 1
+
+                # Rule 3
+                if fn1 != fn2 and ln1 == ln2 and dob_match_s and ssn1 == ssn2:
+                    counts["3"] += 1
+
+                # Rule 4
+                if (fn1 != fn2 and ln1 == ln2 
+                    and (is_blank(dob1) or is_blank(dob2) or not dob_comp_s)
+                    and ssn1 == ssn2):
+                    counts["4"] += 1
+
+                # Rule 5
+                if fn1 != fn2 and ln1 != ln2 and dob_match_s and ssn1 == ssn2:
+                    counts["5"] += 1
+
+                # Rule 6
+                if (fn1 == fn2 and ln1 != ln2 
+                    and (is_blank(dob1) or is_blank(dob2) or not dob_comp_s)
+                    and ssn1 == ssn2):
+                    counts["6"] += 1
+
+                # ======================================
+                # LIKELY MATCH RULES 7–12
+                # ======================================
+
+                # Rule 7
+                if fn1 != fn2 and ln1 == ln2 and dob_ne_l and ssn1 == ssn2:
+                    counts["7"] += 1
+
+                # Rule 8
+                if fn1 == fn2 and ln1 != ln2 and dob_ne_l and ssn1 == ssn2:
+                    counts["8"] += 1
+
+                # Rule 9
+                if fn1 == fn2 and ln1 != ln2 and dob_match_l and (is_blank(ssn1) or is_blank(ssn2)):
+                    counts["9"] += 1
+
+                # Rule 10
+                if fn1 != fn2 and ln1 == ln2 and dob_match_l and (is_blank(ssn1) or is_blank(ssn2)):
+                    counts["10"] += 1
+
+                # Rule 11
+                if fn1 != fn2 and ln1 == ln2 and dob_ne_l and (is_blank(ssn1) or is_blank(ssn2)):
+                    counts["11"] += 1
+
+                # Rule 12
+                if fn1 == fn2 and ln1 == ln2 and dob_match_l and (is_blank(ssn1) or is_blank(ssn2)):
+                    counts["12"] += 1
+
+    return counts, total_pairs
