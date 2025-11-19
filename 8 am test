@@ -1,249 +1,77 @@
+Below is a **much simpler version** of your pipeline that **completely removes ALL FN/LN/DOB/SSN matching logic**.
+
+### ✔️ New Logic
+
+For each likely pair:
+
+1. Get the list of relative **person_ids** for the BASE record.
+2. Get the list of relative **person_ids** for the CANDIDATE record.
+3. If **any relative_id matches**, we mark the likely pair as **confirmed_by_relatives = True**.
+
+That’s it—no name, DOB, SSN, relationship logic.
+
+---
+
+# ✅ **Simplified Code — Relative Person ID Matching Only**
+
+```python
 import pandas as pd
 from collections import defaultdict
-import numpy as np
 
 # -------------------------------------------------------------------
-# Utility helpers
+# Build relatives index: (referral_id, person_id) -> list of relative person_ids
 # -------------------------------------------------------------------
-
-def is_blank(x):
-    return x is None or (isinstance(x, float) and np.isnan(x)) or str(x).strip() == ""
-
-def normalize_name(x):
-    if is_blank(x):
-        return ""
-    return str(x).strip().upper()
-
-def normalize_ssn(x):
-    if is_blank(x):
-        return ""
-    # keep only digits
-    return "".join(ch for ch in str(x) if ch.isdigit())
-
-def normalize_relationship(x):
-    if is_blank(x):
-        return ""
-    return str(x).strip().lower()
-
-def normalize_dob(x):
-    """Convert to date only; return NaT for invalid."""
-    if pd.isna(x):
-        return pd.NaT
-    return pd.to_datetime(x, errors="coerce").date()
-
-def dob_equal(d1, est1, d2, est2):
+def build_relatives_index_simple(df_rel):
     """
-    DOB equality with estimated DOB rules:
-    - If either is estimated -> treat as NOT equal (we don't trust it)
-    - If both not estimated and both valid -> compare dates
-    """
-    if est1 is None or est2 is None:
-        return False
-    est1_flag = str(est1).strip().upper()
-    est2_flag = str(est2).strip().upper()
-    if est1_flag == "Y" or est2_flag == "Y":
-        return False  # at least one is estimated -> don't count as equal
-    if pd.isna(d1) or pd.isna(d2):
-        return False
-    return d1 == d2
-
-def dob_mismatch(d1, est1, d2, est2):
-    """
-    DOB mismatch for rules 1–3:
-    - require both NOT estimated
-    - require both valid
-    - and values differ
-    """
-    if est1 is None or est2 is None:
-        return False
-    est1_flag = str(est1).strip().upper()
-    est2_flag = str(est2).strip().upper()
-    if est1_flag == "Y" or est2_flag == "Y":
-        return False  # if either estimated, don't treat as mismatch
-    if pd.isna(d1) or pd.isna(d2):
-        return False
-    return d1 != d2
-
-
-# -------------------------------------------------------------------
-# Strong match rule for RELATIVES (0–6)
-#   This mirrors your main-person rules, but applied on relative fields
-# -------------------------------------------------------------------
-def relative_match_rule(rel1, rel2):
-    """
-    rel1, rel2 are simple dicts with keys:
-      'first_name', 'last_name', 'dob', 'dob_est', 'ssn'
-    Returns:
-        rule_number (0..6) if any rule matches, else None
-    """
-
-    fn1 = normalize_name(rel1.get("first_name"))
-    ln1 = normalize_name(rel1.get("last_name"))
-    fn2 = normalize_name(rel2.get("first_name"))
-    ln2 = normalize_name(rel2.get("last_name"))
-
-    dob1 = normalize_dob(rel1.get("dob"))
-    dob2 = normalize_dob(rel2.get("dob"))
-    est1 = rel1.get("dob_est")
-    est2 = rel2.get("dob_est")
-
-    ssn1 = normalize_ssn(rel1.get("ssn"))
-    ssn2 = normalize_ssn(rel2.get("ssn"))
-
-    # Rule 0: Exact match on FN, LN, DOB, SSN (with DOB estimated logic)
-    if (fn1 and fn2 and ln1 and ln2 and ssn1 and ssn2 and
-        fn1 == fn2 and ln1 == ln2 and ssn1 == ssn2 and
-        dob_equal(dob1, est1, dob2, est2)):
-        return 0
-
-    # If SSNs don't match, rules that require SSN can't match
-    ssn_same = (ssn1 != "" and ssn1 == ssn2)
-
-    # Rule 1: SSN same, FN & LN same, DOB mismatch (non-est)
-    if ssn_same and fn1 == fn2 and ln1 == ln2 and dob_mismatch(dob1, est1, dob2, est2):
-        return 1
-
-    # Rule 2: SSN same, FN same, DOB equal (non-est), LN mismatch
-    if ssn_same and fn1 == fn2 and dob_equal(dob1, est1, dob2, est2) and ln1 != ln2:
-        return 2
-
-    # Rule 3: SSN same, LN same, DOB equal (non-est), FN mismatch
-    if ssn_same and ln1 == ln2 and dob_equal(dob1, est1, dob2, est2) and fn1 != fn2:
-        return 3
-
-    # Rule 4: SSN same, FN & LN same (DOB ignored or unreliable)
-    if ssn_same and fn1 == fn2 and ln1 == ln2:
-        return 4
-
-    # Rule 5: SSN same, FN same, DOB equal (non-est)
-    if ssn_same and fn1 == fn2 and dob_equal(dob1, est1, dob2, est2):
-        return 5
-
-    # Rule 6: SSN same, LN same, DOB equal (non-est)
-    if ssn_same and ln1 == ln2 and dob_equal(dob1, est1, dob2, est2):
-        return 6
-
-    return None
-
-
-# -------------------------------------------------------------------
-# Compare all relatives of A vs all relatives of B
-# -------------------------------------------------------------------
-def compare_relative_sets(rel_list_A, rel_list_B):
-    """
-    rel_list_A / rel_list_B: lists of dicts for relatives of each side.
-    Returns:
-      matches: list of dicts, each like:
-          {
-            'idx_A': i,
-            'idx_B': j,
-            'rule': rule_number,
-            'relA_relationship': ...,
-            'relB_relationship': ...,
-          }
-    """
-    matches = []
-
-    if not rel_list_A or not rel_list_B:
-        return matches
-
-    for i, rA in enumerate(rel_list_A):
-        for j, rB in enumerate(rel_list_B):
-            rule = relative_match_rule(rA, rB)
-            if rule is not None:
-                matches.append({
-                    "idx_A": i,
-                    "idx_B": j,
-                    "rule": rule,
-                    "relA_relationship": rA.get("relationship"),
-                    "relB_relationship": rB.get("relationship"),
-                })
-    return matches
-
-
-# -------------------------------------------------------------------
-# Build relatives index: (referral_id, person_id) -> list of relatives
-# -------------------------------------------------------------------
-def build_relatives_index(df_rel):
-    """
-    df_rel columns (expected):
-      'referral_id', 'person_id',
-      'relative_relationship',
-      'relative_first_name',
-      'relative_last_name',
-      'relative_date_of_birth',
-      'relative_dob_estimated',
-      'relative_ssn'
+    df_rel expected columns:
+        referral_id, person_id,
+        relative_person_id  <-- THIS must exist
     """
     rel_index = defaultdict(list)
 
     for row in df_rel.itertuples(index=False):
         key = (str(row.referral_id), str(row.person_id))
-        rel_index[key].append({
-            "relationship": normalize_relationship(getattr(row, "relative_relationship", None)),
-            "first_name": getattr(row, "relative_first_name", None),
-            "last_name": getattr(row, "relative_last_name", None),
-            "dob": getattr(row, "relative_date_of_birth", None),
-            "dob_est": getattr(row, "relative_dob_estimated", None),
-            "ssn": getattr(row, "relative_ssn", None),
-        })
+        rel_index[key].append(str(row.relative_person_id))
 
     return rel_index
 
 
 # -------------------------------------------------------------------
-# Union–Find / Disjoint Set for bucketing confirmed matches
+# Compare two relative sets by PERSON ID only
 # -------------------------------------------------------------------
-class DisjointSet:
-    def __init__(self, n):
-        self.parent = list(range(n))
-        self.rank = [0] * n
-
-    def find(self, x):
-        while self.parent[x] != x:
-            self.parent[x] = self.parent[self.parent[x]]
-            x = self.parent[x]
-        return x
-
-    def union(self, a, b):
-        pa, pb = self.find(a), self.find(b)
-        if pa == pb:
-            return
-        if self.rank[pa] < self.rank[pb]:
-            pa, pb = pb, pa
-        self.parent[pb] = pa
-        if self.rank[pa] == self.rank[pb]:
-            self.rank[pa] += 1
+def simple_relative_overlap(relA, relB):
+    """
+    Just checks if any relative_person_id exists in both lists.
+    """
+    setA = set(relA)
+    setB = set(relB)
+    overlap = setA.intersection(setB)
+    return len(overlap), list(overlap)
 
 
 # -------------------------------------------------------------------
-# MAIN PIPELINE
-#   Inputs:
-#     df_likely: only rows with is_likely_match = True
-#     df_rel: relatives table
+# MAIN PIPELINE – simplified
 # -------------------------------------------------------------------
-def confirm_likely_matches_with_relatives(df_likely, df_rel):
-    # 1) Filter relatives to only father/mother/guardian (case-insensitive)
-    df_rel = df_rel.copy()
-    df_rel["relative_relationship_norm"] = df_rel["relative_relationship"].str.strip().str.lower()
-    df_rel_filtered = df_rel[
-        df_rel["relative_relationship_norm"].isin(["father", "mother", "guardian"])
-    ].copy()
+def confirm_likely_matches_by_relative_id(df_likely, df_rel):
+    """
+    df_rel must have: referral_id, person_id, relative_person_id
+    df_likely must have: referral_id, person_id,
+                         likely_matched_pair, likely_matched_person
+    """
 
-    # 2) Build relatives index for quick lookup
-    rel_index = build_relatives_index(df_rel_filtered)
+    # 1) Build simple index of relatives
+    rel_index = build_relatives_index_simple(df_rel)
 
-    # 3) For each likely-match row, build pair-level comparison via relatives
+    # 2) Store pair-level result
     pair_records = []
 
     for idx, row in df_likely.iterrows():
         base_ref = str(row["referral_id"])
         base_person = str(row["person_id"])
+        base_key = (base_ref, base_person)
+        rels_base = rel_index.get(base_key, [])
 
-        key_base = (base_ref, base_person)
-        rels_base = rel_index.get(key_base, [])
-
-        # Parse comma-separated candidates
+        # Parse candidates
         cand_refs_raw = str(row.get("likely_matched_pair", "")).strip()
         cand_pers_raw = str(row.get("likely_matched_person", "")).strip()
 
@@ -253,114 +81,78 @@ def confirm_likely_matches_with_relatives(df_likely, df_rel):
         cand_ref_list = [c.strip() for c in cand_refs_raw.split(",") if c.strip()]
         cand_per_list = [c.strip() for c in cand_pers_raw.split(",") if c.strip()]
 
-        # Defensive: lengths should match
+        # fix unequal lengths
         if len(cand_ref_list) != len(cand_per_list):
-            # You can log or raise a warning here if desired
             min_len = min(len(cand_ref_list), len(cand_per_list))
             cand_ref_list = cand_ref_list[:min_len]
             cand_per_list = cand_per_list[:min_len]
 
+        # Compare base vs each candidate
         for c_ref, c_per in zip(cand_ref_list, cand_per_list):
-            key_cand = (str(c_ref), str(c_per))
-            rels_cand = rel_index.get(key_cand, [])
+            cand_key = (str(c_ref), str(c_per))
+            rels_cand = rel_index.get(cand_key, [])
 
-            matches = compare_relative_sets(rels_base, rels_cand)
-
-            confirmed = len(matches) > 0
-            num_rel_matches = len(matches)
-
-            # Summarize which relationships and rules matched
-            rel_pairs = set()
-            rule_set = set()
-            for m in matches:
-                rel_pairs.add(f"{m['relA_relationship']}-{m['relB_relationship']}")
-                rule_set.add(str(m["rule"]))
-
-            matched_relationships = ";".join(sorted(rel_pairs)) if rel_pairs else ""
-            matched_rules = ";".join(sorted(rule_set)) if rule_set else ""
+            # SIMPLE MATCH: shared relative person_ids
+            num_matches, overlap_ids = simple_relative_overlap(rels_base, rels_cand)
 
             pair_records.append({
                 "base_referral_id": base_ref,
                 "base_person_id": base_person,
                 "cand_referral_id": c_ref,
                 "cand_person_id": c_per,
-                "confirmed_by_relatives": confirmed,
-                "num_relatives_matched": num_rel_matches,
-                "matched_relationships": matched_relationships,
-                "matched_rules": matched_rules,
+                "num_relatives_matched": num_matches,
+                "overlapping_relative_ids": ",".join(overlap_ids),
+                "confirmed_by_relatives": num_matches > 0
             })
 
     pair_df = pd.DataFrame(pair_records)
 
-    # 4) Build union–find clusters based on confirmed pairs only
-    if not pair_df.empty:
-        confirmed_pairs = pair_df[pair_df["confirmed_by_relatives"]]
+    # 3) Attach confirmed flag back to df_likely
+    df_likely = df_likely.copy()
+    confirm_flags = []
 
-        # If no confirmed pairs, we can return without group IDs
-        if not confirmed_pairs.empty:
-            # Create index mapping for all persons involved in confirmed pairs
-            all_keys = set()
-            for _, r in confirmed_pairs.iterrows():
-                all_keys.add((str(r["base_referral_id"]), str(r["base_person_id"])))
-                all_keys.add((str(r["cand_referral_id"]), str(r["cand_person_id"])))
+    for idx, row in df_likely.iterrows():
+        k_ref = str(row["referral_id"])
+        k_per = str(row["person_id"])
 
-            key_to_idx = {key: i for i, key in enumerate(sorted(all_keys))}
-            ds = DisjointSet(len(key_to_idx))
+        # If ANY pair for this (ref, person) was confirmed
+        confirmed_any = (
+            not pair_df[
+                (pair_df["base_referral_id"] == k_ref) &
+                (pair_df["base_person_id"] == k_per) &
+                (pair_df["confirmed_by_relatives"])
+            ].empty
+        )
 
-            # Union for each confirmed pair
-            for _, r in confirmed_pairs.iterrows():
-                k1 = (str(r["base_referral_id"]), str(r["base_person_id"]))
-                k2 = (str(r["cand_referral_id"]), str(r["cand_person_id"]))
-                ds.union(key_to_idx[k1], key_to_idx[k2])
+        confirm_flags.append(confirmed_any)
 
-            # Assign group ids
-            root_to_group = {}
-            next_group_id = 1
-            person_group = {}
-
-            for key, idx_val in key_to_idx.items():
-                root = ds.find(idx_val)
-                if root not in root_to_group:
-                    root_to_group[root] = next_group_id
-                    next_group_id += 1
-                group_id = root_to_group[root]
-                person_group[key] = group_id
-
-            # Attach group_id and confirmed flag back to df_likely
-            df_likely = df_likely.copy()
-            group_ids = []
-            confirmed_any = []
-
-            for _, row in df_likely.iterrows():
-                k = (str(row["referral_id"]), str(row["person_id"]))
-                gid = person_group.get(k, pd.NA)
-                group_ids.append(gid)
-                # If in any confirmed pair, they are "confirmed_match"
-                confirmed_any.append(k in person_group)
-
-            df_likely["exact_group_id"] = group_ids
-            df_likely["confirmed_match_by_relatives"] = confirmed_any
-        else:
-            # No confirmed pairs, still add default columns
-            df_likely = df_likely.copy()
-            df_likely["exact_group_id"] = pd.NA
-            df_likely["confirmed_match_by_relatives"] = False
-    else:
-        # No pair records at all (e.g., empty likely matches)
-        df_likely = df_likely.copy()
-        df_likely["exact_group_id"] = pd.NA
-        df_likely["confirmed_match_by_relatives"] = False
+    df_likely["confirmed_match_by_relatives"] = confirm_flags
 
     return df_likely, pair_df
+```
 
+---
 
-# -------------------------------------------------------------------
-# Example usage
-# -------------------------------------------------------------------
-# df_likely  -> your filtered dataframe where is_likely_match == True
-# df_rel     -> your relatives dataframe
-#
-# final_likely_df, pair_level_df = confirm_likely_matches_with_relatives(df_likely, df_rel)
-#
-# final_likely_df  : has exact_group_id + confirmed_match_by_relatives flags
-# pair_level_df    : one row per likely pair with num_relatives_matched, matched_relationships, matched_rules
+# ✅ **What This Version Does NOT Do**
+
+❌ No FN/LN comparison
+❌ No DOB matching
+❌ No DOB estimated logic
+❌ No SSN checks
+❌ No relatives relationship matching
+❌ No disjoint-set grouping
+
+# ✔️ What It Now DOES
+
+✔ Matches likely pairs **ONLY** when:
+**A relative in BASE has the same person_id as a relative in CANDIDATE.**
+
+This is the simplest possible version of “confirm likely match using relatives.”
+
+---
+
+# If you want even lighter logic
+
+I can make it **one-liner match**, or remove the intermediate pair_df, or merge logic into df_likely directly.
+
+Just tell me.
