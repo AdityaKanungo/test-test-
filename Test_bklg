@@ -1,202 +1,107 @@
-Got it — you want basic EDA before any matching is done (pre-match), focusing ONLY on the 4 input fields:
-
-1️⃣ First Name (FN)
-
-2️⃣ Last Name (LN)
-
-3️⃣ Date of Birth (DOB)
-
-4️⃣ SSN
-
-No matching fields.
-No longitudinal fields.
-Just EDA on the four raw identifying fields.
-
-Here is clean, ready-to-run code for descriptive statistics + visualisations for FN, LN, DOB, SSN.
+Here is a clean, professional, client-friendly explanation that removes all technical jargon and focuses on business logic.
+You can copy/paste this directly into an email or presentation.
 
 
 ---
 
-✅ PRE-MATCH EDA CODE FOR FN, LN, DOB, SSN
+✅ Client-Friendly Explanation of the Difference Between the Two Measures
 
-Assume your dataframe is named df and contains columns:
-
-["FN", "LN", "DOB", "SSN"]
+Below is a simple explanation of why the “Last Year Sales” calculation looks different in the 196 report compared to the 212B report.
 
 
 ---
 
-1. Basic Completeness & Structure
+1. How the 196 Report Calculates Last Year Sales
 
-import pandas as pd
-import numpy as np
-import matplotlib.pyplot as plt
+In the 196, the logic is very direct:
 
-# Replace blanks with NaN for analysis
-df["FN_clean"]  = df["FN"].replace(["", " ", None], np.nan)
-df["LN_clean"]  = df["LN"].replace(["", " ", None], np.nan)
-df["SSN_clean"] = df["SSN"].replace(["", " ", None, "nan", "NaN"], np.nan)
+It goes to the weekly sales table
 
-# DOB already NaT for blanks
-df["DOB_clean"] = pd.to_datetime(df["DOB"], errors="coerce")
+It looks at last year’s fiscal period
+
+It adds up all the units sold last year
+
+It includes only valid RS = 1 records
 
 
----
+In other words:
 
-2. Missingness Summary
+> The measure in the 196 report simply totals last year’s sales based on the filters applied.
+Nothing more, nothing less.
 
-missing_summary = pd.DataFrame({
-    "Missing (%)": [
-        df["FN_clean"].isna().mean()*100,
-        df["LN_clean"].isna().mean()*100,
-        df["DOB_clean"].isna().mean()*100,
-        df["SSN_clean"].isna().mean()*100,
-    ]
-}, index=["FN", "LN", "DOB", "SSN"])
 
-print("Missingness Summary:\n")
-print(missing_summary)
+
+This is a straightforward “last year same period” calculation.
 
 
 ---
 
-3. Uniqueness / Cardinality
+2. How the 212B Report Calculates Last Year Sales (LY FYTD)
 
-uniqueness_summary = pd.DataFrame({
-    "Unique Values": [
-        df["FN_clean"].nunique(dropna=True),
-        df["LN_clean"].nunique(dropna=True),
-        df["DOB_clean"].nunique(dropna=True),
-        df["SSN_clean"].nunique(dropna=True),
-    ]
-}, index=["FN", "LN", "DOB", "SSN"])
+The 212B report works differently because it is a Fiscal Year-To-Date (FYTD) report that follows promo-month rules, not just standard fiscal calendar rules.
 
-print("\nUniqueness Summary:\n")
-print(uniqueness_summary)
+Instead of directly adding up last year’s sales, the 212B measure does this:
+
+It checks whether the current month is the “current promo month”
+
+Based on that, it selects one of two pre-calculated LY-FYTD values:
+
+Current month’s LY FYTD value, or
+
+Previous month’s LY FYTD value
 
 
----
 
-4. Frequency tables (Top 20)
+In other words:
 
-Useful for spotting typos or inconsistent spellings.
+> The 212B measure is not calculating sales on its own — it is choosing which LY-FYTD value to display based on the promo-month logic used in this report.
 
-print("\nTop First Names:")
-print(df["FN_clean"].value_counts().head(20))
 
-print("\nTop Last Names:")
-print(df["LN_clean"].value_counts().head(20))
 
-print("\nTop DOBs:")
-print(df["DOB_clean"].value_counts().head(20))
-
-print("\nTop SSNs:")
-print(df["SSN_clean"].value_counts().head(20))
+This design supports the business rule that 212B should reflect promo-aligned FYTD performance, not just a simple last-year total.
 
 
 ---
 
-5. Visualizations
+3. Why the Two Measures Are Different
+
+The two reports serve different business purposes:
+
+196 Report
+
+Weekly view
+
+Standard fiscal-year logic
+
+Straight sum of last year’s units
+
+Does not depend on promo-month logic
 
 
----
+212B Report
 
-5.1 Missingness Bar Chart
+Fiscal Year-To-Date performance
 
-missing_summary.plot(kind="bar", figsize=(6,4), legend=False)
-plt.title("Missingness % by Field")
-plt.ylabel("Percent Missing")
-plt.show()
+Promo-calendar driven
 
+Needs to pick the correct LY-FYTD value (current vs previous month)
 
----
+Uses conditional logic instead of directly summing sales
 
-5.2 Distribution of DOB
-
-df["DOB_clean"].dropna().hist(bins=50, figsize=(8,4))
-plt.title("Distribution of Date of Birth")
-plt.xlabel("Year")
-plt.ylabel("Count")
-plt.show()
-
-
----
-
-5.3 Top 15 First Names
-
-df["FN_clean"].value_counts().head(15).plot(kind="bar", figsize=(8,4))
-plt.title("Top 15 Most Frequent First Names")
-plt.xlabel("First Name")
-plt.ylabel("Count")
-plt.xticks(rotation=45)
-plt.show()
 
 
 ---
 
-5.4 Top 15 Last Names
+4. Summary
 
-df["LN_clean"].value_counts().head(15).plot(kind="bar", figsize=(8,4))
-plt.title("Top 15 Most Frequent Last Names")
-plt.xlabel("Last Name")
-plt.ylabel("Count")
-plt.xticks(rotation=45)
-plt.show()
+The 196 report calculates last-year sales directly from the sales data.
 
+The 212B report selects between two FYTD last-year values based on promo-month business rules.
 
----
+Because the business requirements are different, the DAX logic looks different.
 
-5.5 SSN Completeness Pie Chart
-
-ssn_counts = df["SSN_clean"].isna().value_counts()
-ssn_counts.index = ["Missing SSN", "Valid SSN"]
-
-ssn_counts.plot(kind="pie", autopct="%1.1f%%", figsize=(6,6))
-plt.title("SSN Completeness")
-plt.ylabel("")
-plt.show()
 
 
 ---
 
-6. Optional: Character Length EDA
-
-Useful for identifying typos.
-
-df["FN_len"] = df["FN_clean"].dropna().apply(len)
-df["LN_len"] = df["LN_clean"].dropna().apply(len)
-df["SSN_len"] = df["SSN_clean"].dropna().apply(len)
-
-df[["FN_len","LN_len","SSN_len"]].describe()
-
-
----
-
-⭐ You now have a complete Pre-Match EDA Suite
-
-This helps you understand:
-
-How messy the data is
-
-Whether blanks & duplicates will affect match quality
-
-Variations in FN/LN spellings
-
-Patterns in DOB distribution
-
-SSN completeness
-
-Any anomalies before running the matcher
-
-
-If you'd like, I can also generate:
-
-✔️ A leadership-friendly summary
-
-✔️ Slide-ready visuals
-
-✔️ Automated fuzzy-cleaning suggestions
-
-✔️ Statistical validation of match confidence
-
-Just tell me!
+If you'd like, I can also create a one-slide summary that explains this visually for client presentations.
