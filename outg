@@ -1,153 +1,202 @@
-from collections import defaultdict
-from itertools import combinations
+Here’s an AWS version of the same RAG architecture, with the flow and a diagram you can reuse.
 
-def get_rule_candidates(df):
-    FN  = df["FN"].to_numpy(object)
-    LN  = df["LN"].to_numpy(object)
-    DOB = df["DOB"].to_numpy(object)
-    SSN = df["SSN"].to_numpy(object)
-    DOB_EST = df["date_of_birth_estimated"].to_numpy(object)
 
-    # helper
-    def is_blank(x):
-        import pandas as pd
-        if pd.isna(x): return True
-        if isinstance(x, str) and x.strip()=="":
-            return True
-        return False
+---
 
-    # strong rule DOB logic — same as your matching code
-    def strong_dob_compare(d1, d2, est1, est2):
-        d1_blank = is_blank(d1)
-        d2_blank = is_blank(d2)
-        if d1_blank or d2_blank: 
-            return (False, False, False)   # match, mismatch, comparable=False
+1. Azure → AWS Service Mapping
 
-        # estimated? → not comparable
-        if est1=="Y" or est2=="Y":
-            return (False, False, False)
+Actors & Security
 
-        # comparable actual DOBs
-        if d1 == d2:
-            return (True, False, True)
-        else:
-            return (False, True, True)
+Case Workers / Policy Professionals → Same (corporate users)
 
-    # likely rule DOB logic — EST ignored
-    def likely_dob_compare(d1, d2):
-        if is_blank(d1) or is_blank(d2):
-            return (False, False)
-        if d1 == d2:
-            return (True, False)
-        else:
-            return (False, True)
+SiteMinder Authentication (OIDC, MFA) → SiteMinder (existing) federated into AWS Cognito / IAM Identity Center
 
-    # initialize counters
-    counts = {str(i): 0 for i in range(13)}  # rules 0–12
+Service Authentication (SPN/Key/Service Account) → IAM Roles, IAM Users, AWS Secrets Manager, KMS
 
-    # blocking logic (same as your code)
-    blocks = [
-        ["FN", "LN", "DOB"],
-        ["FN", "LN"],
-        ["FN", "DOB"],
-        ["LN", "DOB"]
-    ]
+Azure Firewall → AWS Network Firewall + Security Groups + NACLs
 
-    seen = set()
-    total_pairs = 0
 
-    for cols in blocks:
-        keys = [df[c].to_numpy(object) for c in cols]
-        groups = defaultdict(list)
+App / API Layer
 
-        # assign to groups
-        for i in range(len(df)):
-            k = tuple(arr[i] for arr in keys)
-            groups[k].append(i)
+Azure Web App → Amazon ECS Fargate or AWS App Runner (or Elastic Beanstalk)
 
-        # compare pairs within blocks
-        for idxs in groups.values():
-            if len(idxs) < 2:
-                continue
+SOA Gateway (Akana) → Amazon API Gateway (or keep Akana on EC2 if you must)
 
-            for i, j in combinations(idxs, 2):
+Azure Function (orchestrator) → AWS Lambda
 
-                if (i,j) in seen:
-                    continue
-                seen.add((i,j))
-                total_pairs += 1
 
-                fn1, ln1, dob1, ssn1, est1 = FN[i], LN[i], DOB[i], SSN[i], DOB_EST[i]
-                fn2, ln2, dob2, ssn2, est2 = FN[j], LN[j], DOB[j], SSN[j], DOB_EST[j]
+AI & Data
 
-                # -------- STRONG RULE DOB LOGIC --------
-                dob_match_s, dob_ne_s, dob_comp_s = strong_dob_compare(dob1, dob2, est1, est2)
+Azure OpenAI Services → Amazon Bedrock (or SageMaker endpoint)
 
-                # -------- LIKELY RULE DOB LOGIC --------
-                dob_match_l, dob_ne_l = likely_dob_compare(dob1, dob2)
+Azure File Share – policy documents for embeddings → Amazon S3 (raw policy docs)
 
-                # ======================================
-                # STRONG MATCH RULES 0–6
-                # ======================================
+(optional but recommended) Vector Index → Amazon OpenSearch Serverless (vector engine) or Amazon Aurora PostgreSQL with pgvector
 
-                # Rule 0
-                if fn1 == fn2 and ln1 == ln2 and dob_match_s and ssn1 == ssn2:
-                    counts["0"] += 1
+Azure Data Lake Gen2 – Q&A pairs & feedback → S3 Data Lake (+ Glue catalog, Athena/Redshift for analytics)
 
-                # Rule 1
-                if fn1 == fn2 and ln1 == ln2 and dob_ne_s and ssn1 == ssn2:
-                    counts["1"] += 1
+Azure Storage Account for Splunk → CloudWatch Logs + Kinesis Data Firehose → Splunk
 
-                # Rule 2
-                if fn1 == fn2 and ln1 != ln2 and dob_match_s and ssn1 == ssn2:
-                    counts["2"] += 1
 
-                # Rule 3
-                if fn1 != fn2 and ln1 == ln2 and dob_match_s and ssn1 == ssn2:
-                    counts["3"] += 1
 
-                # Rule 4
-                if (fn1 != fn2 and ln1 == ln2 
-                    and (is_blank(dob1) or is_blank(dob2) or not dob_comp_s)
-                    and ssn1 == ssn2):
-                    counts["4"] += 1
+---
 
-                # Rule 5
-                if fn1 != fn2 and ln1 != ln2 and dob_match_s and ssn1 == ssn2:
-                    counts["5"] += 1
+2. AWS Architecture Flow (step-by-step)
 
-                # Rule 6
-                if (fn1 == fn2 and ln1 != ln2 
-                    and (is_blank(dob1) or is_blank(dob2) or not dob_comp_s)
-                    and ssn1 == ssn2):
-                    counts["6"] += 1
+1. User access & auth
 
-                # ======================================
-                # LIKELY MATCH RULES 7–12
-                # ======================================
+Case worker browses to intranet Policy Engine URL.
 
-                # Rule 7
-                if fn1 != fn2 and ln1 == ln2 and dob_ne_l and ssn1 == ssn2:
-                    counts["7"] += 1
+SiteMinder authenticates user with MFA and issues OIDC/SAML token.
 
-                # Rule 8
-                if fn1 == fn2 and ln1 != ln2 and dob_ne_l and ssn1 == ssn2:
-                    counts["8"] += 1
+User is federated into Amazon Cognito (or IAM Identity Center) and receives app session.
 
-                # Rule 9
-                if fn1 == fn2 and ln1 != ln2 and dob_match_l and (is_blank(ssn1) or is_blank(ssn2)):
-                    counts["9"] += 1
 
-                # Rule 10
-                if fn1 != fn2 and ln1 == ln2 and dob_match_l and (is_blank(ssn1) or is_blank(ssn2)):
-                    counts["10"] += 1
 
-                # Rule 11
-                if fn1 != fn2 and ln1 == ln2 and dob_ne_l and (is_blank(ssn1) or is_blank(ssn2)):
-                    counts["11"] += 1
+2. Frontend web app
 
-                # Rule 12
-                if fn1 == fn2 and ln1 == ln2 and dob_match_l and (is_blank(ssn1) or is_blank(ssn2)):
-                    counts["12"] += 1
+Browser connects (via internal load balancer) to ECS Fargate / App Runner hosting the Policy Engine UI within a VPC.
 
-    return counts, total_pairs
+App uses Cognito tokens for user context and authorization.
+
+
+
+3. API gateway / service layer
+
+Frontend calls internal Amazon API Gateway endpoint.
+
+API Gateway:
+
+Verifies JWT (Cognito) / mTLS.
+
+Routes request to AWS Lambda orchestrator.
+
+
+
+
+4. RAG orchestration (Lambda)
+
+Lambda validates the request and user permissions.
+
+Lambda performs retrieval:
+
+1. Uses metadata (policy type, business area, etc.) to search Amazon OpenSearch Serverless (vector index) or Aurora pgvector.
+
+
+2. Vector index points to source documents in S3 holding the policy PDFs/Word docs.
+
+
+
+Lambda fetches top-K relevant chunks from S3 (or from the vector index result payload).
+
+
+
+5. LLM call
+
+Lambda calls Amazon Bedrock (e.g., Claude, Titan, etc.) with:
+
+System prompt (governance, tone, disclaimers).
+
+Retrieved context snippets.
+
+User question.
+
+
+Bedrock returns the grounded answer plus optional citations.
+
+
+
+6. Response logging & analytics
+
+Lambda writes:
+
+Question, retrieved doc IDs, model response.
+
+User feedback (thumbs-up/down, comments).
+
+
+These are stored in a S3 data lake partitioned by date/app/team.
+
+Optional: also write to DynamoDB for low-latency per-conversation history.
+
+
+
+7. Monitoring & Splunk
+
+Lambda, ECS, API Gateway, and VPC logs → CloudWatch Logs.
+
+A Kinesis Data Firehose stream ships relevant logs/metrics to Splunk.
+
+Alarms and dashboards are set up in CloudWatch.
+
+
+
+8. Network & security
+
+All services run in private subnets, with:
+
+VPC endpoints for S3, Bedrock, OpenSearch.
+
+AWS Network Firewall + security groups restricting traffic.
+
+
+Secrets (DB creds, API keys) in AWS Secrets Manager, encrypted with KMS.
+
+
+
+
+
+---
+
+3. Text Diagram (Mermaid)
+
+You can paste this into any Mermaid-enabled tool (like many wiki systems) to render the diagram:
+
+flowchart LR
+    subgraph Users["Case Workers / Policy Professionals"]
+        U[User Browser]
+    end
+
+    subgraph Auth["Identity & Access"]
+        SM[SiteMinder<br/>OIDC + MFA]
+        CG[Cognito / IAM Identity Center]
+    end
+
+    subgraph App["Application Layer (VPC)"]
+        FE[ECS Fargate / App Runner<br/>Policy Engine Web App]
+        APIGW[Amazon API Gateway]
+        L[Lambda<br/>RAG Orchestrator]
+    end
+
+    subgraph DataAI["Data & AI"]
+        S3Docs[(S3 - Policy Documents)]
+        VectorDB[(OpenSearch Serverless<br/>or Aurora pgvector)]
+        Bedrock[(Amazon Bedrock<br/>LLM)]
+        S3Lake[(S3 Data Lake<br/>Q&A + Feedback)]
+    end
+
+    subgraph Observability["Logging & Monitoring"]
+        CW[CloudWatch Logs & Metrics]
+        FH[Kinesis Data Firehose]
+        SPL[Splunk]
+    end
+
+    U -->|Intranet URL| SM --> CG --> FE
+    FE -->|HTTPS / JWT| APIGW --> L
+
+    L -->|Vector Search| VectorDB
+    VectorDB -->|Doc IDs & Chunks| S3Docs
+    L -->|Prompt + Context| Bedrock -->|Grounded Answer| L
+
+    L -->|Store Q&A, Feedback| S3Lake
+
+    FE -->|App Logs| CW
+    L -->|Function Logs| CW
+    APIGW -->|Access Logs| CW
+
+    CW --> FH --> SPL
+
+
+---
+
+If you’d like, I can also tweak this for specific AWS choices you already use (e.g., “must be EC2 only”, “we use Redshift instead of Athena”, “we have an existing Akana gateway we must keep”), and I’ll remap the flow accordingly.
