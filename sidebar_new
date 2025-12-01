@@ -1,270 +1,161 @@
-Below is the **fully updated, ready-to-paste code** with the correct DOB-EST logic applied everywhere:
+Perfect — here are two clean summary functions only, no matching logic, no helpers, no overhead.
+You run these AFTER your dataframe already contains:
 
-✔ DOB match only when BOTH DOB_EST = `"N"`
-✔ If either or both DOBs are estimated → **DOB is not comparable**
-✔ In that case → **dob_match = False** and **dob_ne_match = False**
-✔ Strong rules & likely rules updated
-✔ Main loop updated to pass DOB_EST into rule functions
+perp_reoccurrence_flag ("Y" / "N")
 
----
+perp_match_type ("strong", "family_rel", "address", "none")
 
-# ✅ **UPDATED FULL CODE (Strong + Likely rules + Main function)**
+perp_relationship
 
-### 🔥 *You can paste this directly over your existing code.*
+
 
 ---
 
-## ⭐ **1. Helper functions (unchanged)**
+✅ 1. Summary at (referral_id, person_id, allegation_id) level
 
-```python
-def is_blank(x):
-    import pandas as pd
-    if pd.isna(x):
-        return True
-    if isinstance(x, str) and x.strip() == "":
-        return True
-    return False
+def summarize_at_referral_person_allegation(df):
+    """
+    Summary at unique (referral_id, person_id, allegation_id) level.
+    """
 
-def nonblank_equal(a, b):
-    return (a == b) and (not is_blank(a)) and (not is_blank(b))
+    # Collapse to unique level
+    base = df.drop_duplicates(
+        subset=["referral_id", "person_id", "allegation_id"]
+    ).copy()
 
-def nonblank_not_equal(a, b):
-    return (a != b) and (not is_blank(a)) and (not is_blank(b))
-```
+    # Define "perp in family"
+    allowed_relationships = [
+        "Father-Adoptive", "Father-Biological", "Father-Unknown",
+        "Mother-Adoptive", "Mother-Biological", "Mother-Unknown",
+        "Guardian-Unknown", "Guardian-Legal", "Guardian-Non-Legal",
+        "Guardian Ad Litem", "Guardian-Court Ordered",
+        "Sibling-Full", "Sibling-Maternal Half", "Sibling-Paternal Half",
+    ]
+    base["perp_in_family"] = base["perp_relationship"].isin(allowed_relationships)
 
----
+    # ----------------------------------
+    # 1. Perp in child's family: Y/N
+    # ----------------------------------
+    family_yes = int((base["perp_in_family"]).sum())
+    family_no  = len(base) - family_yes
 
-## ⭐ **2. UPDATED Strong Match Rules (0–6)**
+    # ----------------------------------
+    # 2. Out of "Yes": family match vs not
+    # ----------------------------------
+    yes_family = base[base["perp_in_family"]]
 
-### 🔥 DOB_EST logic added at the top
+    family_match_yes = int((yes_family["perp_match_type"] == "family_rel").sum())
+    family_match_no  = len(yes_family) - family_match_yes
 
-```python
-def match_rule(r1, r2):
-    fn1, ln1, dob1, ssn1, dob_est1 = r1
-    fn2, ln2, dob2, ssn2, dob_est2 = r2
+    # ----------------------------------
+    # 3. Out of "No": address matches + final Y/N
+    # ----------------------------------
+    no_family = base[~base["perp_in_family"]]
 
-    # ---------------------------
-    # NEW DOB handling
-    # ---------------------------
-    dob1_blank = is_blank(dob1)
-    dob2_blank = is_blank(dob2)
+    address_match_yes = int((no_family["perp_match_type"] == "address").sum())
+    final_match_yes   = int((no_family["perp_reoccurrence_flag"] == "Y").sum())
+    final_match_no    = int((no_family["perp_reoccurrence_flag"] == "N").sum())
 
-    dob1_est = (dob_est1 == "Y")
-    dob2_est = (dob_est2 == "Y")
+    return {
+        "level": "referral_id-person_id-allegation_id",
+        "total_rows": len(base),
 
-    # DOB comparable only when:
-    # - not blank
-    # - not estimated
-    dob_comparable = (not dob1_blank) and (not dob2_blank) and (not dob1_est) and (not dob2_est)
+        "family_yes": family_yes,
+        "family_no": family_no,
 
-    if dob_comparable:
-        dob_match = (dob1 == dob2)
-        dob_ne_match = (dob1 != dob2)
-    else:
-        dob_match = False
-        dob_ne_match = False
-    # ---------------------------
+        "family_match_yes": family_match_yes,
+        "family_match_no": family_match_no,
 
-    # Rule 0: FN= LN= DOB= SSN=
-    if nonblank_equal(fn1, fn2) and nonblank_equal(ln1, ln2) and dob_match and nonblank_equal(ssn1, ssn2):
-        return 0
+        "address_match_yes": address_match_yes,
+        "final_match_yes": final_match_yes,
+        "final_match_no": final_match_no,
+    }
 
-    # Rule 1: FN= LN= DOB≠ SSN=
-    if nonblank_equal(fn1, fn2) and nonblank_equal(ln1, ln2) and dob_ne_match and nonblank_equal(ssn1, ssn2):
-        return 1
-
-    # Rule 2: FN= LN≠ DOB= SSN=
-    if nonblank_equal(fn1, fn2) and nonblank_not_equal(ln1, ln2) and dob_match and nonblank_equal(ssn1, ssn2):
-        return 2
-
-    # Rule 3: FN≠ LN= DOB= SSN=
-    if nonblank_not_equal(fn1, fn2) and nonblank_equal(ln1, ln2) and dob_match and nonblank_equal(ssn1, ssn2):
-        return 3
-
-    # Rule 4: FN≠ LN= DOB blank or not comparable, SSN=
-    if nonblank_not_equal(fn1, fn2) and nonblank_equal(ln1, ln2) and (dob1_blank or dob2_blank or not dob_comparable) and nonblank_equal(ssn1, ssn2):
-        return 4
-
-    # Rule 5: FN≠ LN≠ DOB= SSN=
-    if nonblank_not_equal(fn1, fn2) and nonblank_not_equal(ln1, ln2) and dob_match and nonblank_equal(ssn1, ssn2):
-        return 5
-
-    # Rule 6: FN= LN≠ DOB blank or not comparable, SSN=
-    if nonblank_equal(fn1, fn2) and nonblank_not_equal(ln1, ln2) and (dob1_blank or dob2_blank or not dob_comparable) and nonblank_equal(ssn1, ssn2):
-        return 6
-
-    return None
-```
 
 ---
 
-## ⭐ **3. UPDATED Likely Match Rules (7–12)**
+✅ 2. Summary at (referral_id, person_id) level
 
-### 🔥 Identical DOB_EST logic added here too
+def summarize_at_referral_person(df):
+    """
+    Summary at unique (referral_id, person_id) level.
+    """
 
-```python
-def likely_match_rule(r1, r2):
-    fn1, ln1, dob1, ssn1, dob_est1 = r1
-    fn2, ln2, dob2, ssn2, dob_est2 = r2
+    base = df.drop_duplicates(
+        subset=["referral_id", "person_id"]
+    ).copy()
 
-    # ---------------------------
-    # NEW DOB handling
-    # ---------------------------
-    dob1_blank = is_blank(dob1)
-    dob2_blank = is_blank(dob2)
+    allowed_relationships = [
+        "Father-Adoptive", "Father-Biological", "Father-Unknown",
+        "Mother-Adoptive", "Mother-Biological", "Mother-Unknown",
+        "Guardian-Unknown", "Guardian-Legal", "Guardian-Non-Legal",
+        "Guardian Ad Litem", "Guardian-Court Ordered",
+        "Sibling-Full", "Sibling-Maternal Half", "Sibling-Paternal Half",
+    ]
+    base["perp_in_family"] = base["perp_relationship"].isin(allowed_relationships)
 
-    dob1_est = (dob_est1 == "Y")
-    dob2_est = (dob_est2 == "Y")
+    # 1. Perp in family
+    family_yes = int((base["perp_in_family"]).sum())
+    family_no  = len(base) - family_yes
 
-    dob_comparable = (not dob1_blank) and (not dob2_blank) and (not dob1_est) and (not dob2_est)
+    # 2. Out of "Yes": family_rel match
+    yes_family = base[base["perp_in_family"]]
+    family_match_yes = int((yes_family["perp_match_type"] == "family_rel").sum())
+    family_match_no  = len(yes_family) - family_match_yes
 
-    if dob_comparable:
-        dob_match = (dob1 == dob2)
-        dob_ne_match = (dob1 != dob2)
-    else:
-        dob_match = False
-        dob_ne_match = False
-    # ---------------------------
+    # 3. Out of "No": address + final match
+    no_family = base[~base["perp_in_family"]]
 
-    # #7: FN≠ LN= DOB≠ SSN=
-    if nonblank_not_equal(fn1, fn2) and nonblank_equal(ln1, ln2) and dob_ne_match and nonblank_equal(ssn1, ssn2):
-        return "7"
+    address_match_yes = int((no_family["perp_match_type"] == "address").sum())
+    final_match_yes   = int((no_family["perp_reoccurrence_flag"] == "Y").sum())
+    final_match_no    = int((no_family["perp_reoccurrence_flag"] == "N").sum())
 
-    # #8: FN= LN≠ DOB≠ SSN=
-    if nonblank_equal(fn1, fn2) and nonblank_not_equal(ln1, ln2) and dob_ne_match and nonblank_equal(ssn1, ssn2):
-        return "8"
+    return {
+        "level": "referral_id-person_id",
+        "total_rows": len(base),
 
-    # #9: FN= LN≠ DOB= SSN blank
-    if nonblank_equal(fn1, fn2) and nonblank_not_equal(ln1, ln2) and dob_match and (is_blank(ssn1) or is_blank(ssn2)):
-        return "9"
+        "family_yes": family_yes,
+        "family_no": family_no,
 
-    # #10: FN≠ LN= DOB= SSN blank
-    if nonblank_not_equal(fn1, fn2) and nonblank_equal(ln1, ln2) and dob_match and (is_blank(ssn1) or is_blank(ssn2)):
-        return "10"
+        "family_match_yes": family_match_yes,
+        "family_match_no": family_match_no,
 
-    # #11: FN≠ LN= DOB≠ SSN blank
-    if nonblank_not_equal(fn1, fn2) and nonblank_equal(ln1, ln2) and dob_ne_match and (is_blank(ssn1) or is_blank(ssn2)):
-        return "11"
+        "address_match_yes": address_match_yes,
+        "final_match_yes": final_match_yes,
+        "final_match_no": final_match_no,
+    }
 
-    # #12: FN= LN= DOB= SSN blank
-    if nonblank_equal(fn1, fn2) and nonblank_equal(ln1, ln2) and dob_match and (is_blank(ssn1) or is_blank(ssn2)):
-        return "12"
-
-    return None
-```
 
 ---
 
-## ⭐ **4. UPDATED Main Function (Only the part where r1, r2 are built changes)**
+✅ How to use
 
-### 🔥 Now passes DOB_EST into the rule functions
+summary1 = summarize_at_referral_person_allegation(df_flagged)
+summary2 = summarize_at_referral_person(df_flagged)
 
-```python
-# Strong matches
-dsu = DisjointSet(n)
-ssn_groups = defaultdict(list)
+print(summary1)
+print(summary2)
 
-for i, ssn in enumerate(SSN):
-    if not is_blank(ssn):
-        ssn_groups[ssn].append(i)
-
-for ssn, idxs in ssn_groups.items():
-    if len(idxs) < 2:
-        continue
-    for i, j in combinations(idxs, 2):
-
-        r1 = (FN[i], LN[i], DOB[i], SSN[i], DOB_EST[i])
-        r2 = (FN[j], LN[j], DOB[j], SSN[j], DOB_EST[j])
-
-        rule = match_rule(r1, r2)
-        if rule is None:
-            continue
-
-        matched_pair[i] = f"{matched_pair[i]}{ref_ids[j]};"
-        matched_rule[i] = f"{matched_rule[i]}{rule};"
-
-        matched_pair[j] = f"{matched_pair[j]}{ref_ids[i]};"
-        matched_rule[j] = f"{matched_rule[j]}{rule};"
-
-        dsu.union(i, j)
-```
 
 ---
 
-## ⭐ **5. UPDATED Likely Matching Block**
+🧊 Output Example
 
-### 🔥 Also passes DOB_EST
+You will see dictionaries like:
 
-```python
-blocks = [
-    ["FN", "LN", "DOB"],
-    ["FN", "LN"],
-    ["FN", "DOB"],
-    ["LN", "DOB"]
-]
+{
+ 'level': 'referral_id-person_id-allegation_id',
+ 'total_rows': 82319,
+ 'family_yes': 10342,
+ 'family_no': 71977,
+ 'family_match_yes': 421,
+ 'family_match_no': 9921,
+ 'address_match_yes': 318,
+ 'final_match_yes': 552,
+ 'final_match_no': 71425
+}
 
-pairs_seen = set()
-
-for cols in blocks:
-    key_arrays = [df[c].to_numpy(object) for c in cols]
-    groups = defaultdict(list)
-
-    for i in range(n):
-        key = tuple(arr[i] for arr in key_arrays)
-        groups[key].append(i)
-
-    for idxs in groups.values():
-        if len(idxs) < 2:
-            continue
-
-        for i, j in combinations(idxs, 2):
-            if i > j:
-                i, j = j, i
-
-            if (i, j) in pairs_seen:
-                continue
-
-            pairs_seen.add((i, j))
-
-            r1 = (FN[i], LN[i], DOB[i], SSN[i], DOB_EST[i])
-            r2 = (FN[j], LN[j], DOB[j], SSN[j], DOB_EST[j])
-
-            rule = likely_match_rule(r1, r2)
-            if rule is None:
-                continue
-
-            likely_pair[i] = f"{likely_pair[i]}{ref_ids[j]};"
-            likely_rule[i] = f"{likely_rule[i]}{rule};"
-
-            likely_pair[j] = f"{likely_pair[j]}{ref_ids[i]};"
-            likely_rule[j] = f"{likely_rule[j]}{rule};"
-```
 
 ---
 
-# 🎉 **DONE — FULL CODE UPDATED EXACTLY TO YOUR SPECIFICATIONS**
-
-This implementation ensures:
-
-### ✔ Estimated DOBs are **not treated as matches**
-
-### ✔ Estimated DOBs are **not treated as mismatches**
-
-### ✔ DOB becomes completely **non-comparable** when estimated
-
-### ✔ All strong rules (0–6) remain correct
-
-### ✔ All likely rules (7–12) remain correct
-
----
-
-# If you want…
-
-I can also give you:
-
-✅ Unit tests for each rule
-✅ Logging version (to see exactly why a rule fired)
-✅ A validation engine that prints “why this was not a match”
-
-Just tell me.
-
+If you want the results returned as a DataFrame instead of dicts, or want a combined single summary table, tell me — I can format it however you like.
