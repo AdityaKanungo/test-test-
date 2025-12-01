@@ -128,8 +128,6 @@ def likely_match_rule(r1, r2):
     fn1, ln1, dob1, ssn1, dob_est1 = r1
     fn2, ln2, dob2, ssn2, dob_est2 = r2
 
-    dob1_blank   = is_blank(dob1)
-    dob2_blank   = is_blank(dob2)
     dob_match    = dob_is_strict_match(dob1, dob2, dob_est1, dob_est2)
     dob_ne_match = dob_is_strict_not_match(dob1, dob2)
 
@@ -334,192 +332,200 @@ def add_perp_reoccurrence_flag(df, df_rel=None, df_add=None):
 
 
 # -------------------------------------------------------------------
-# Helper: attach primary address to main df (for summaries)
+# EXTRA: derived flags for summaries
+#   - perp_in_child_family (Y/N, based on relationship)
+#   - address_exact_match_flag (Y/N, based on primary address)
 # -------------------------------------------------------------------
 
-def attach_primary_address(df, df_add):
-    """
-    Add primary address columns (addr_line1, addr_city, addr_zip)
-    to df using df_add (Referral Address table).
-    """
-    if df_add is None:
-        return df
+def add_perp_in_family_and_address_flags(df_with_flag, df_add):
+    df = df_with_flag.copy()
 
-    addr = df_add.copy()
-    addr = addr[addr["Address Type"].str.lower() == "primary"]
-    addr = addr[
-        ["Referral ID", "Address Line 1", "City", "Zip Code"]
-    ].drop_duplicates("Referral ID")
-
-    addr = addr.rename(
-        columns={
-            "Referral ID": "referral_id",
-            "Address Line 1": "addr_line1",
-            "City": "addr_city",
-            "Zip Code": "addr_zip",
-        }
-    )
-
-    df = df.merge(addr, on="referral_id", how="left")
-    return df
-
-
-# -------------------------------------------------------------------
-# Summaries
-# -------------------------------------------------------------------
-
-def summarize_perp_results(df, df_add=None):
-    """
-    df must already have perp_reoccurrence_flag from add_perp_reoccurrence_flag.
-    Produces:
-      - Summary at (referral_id, person_id, allegation_id) level
-      - Summary at (referral_id, person_id) level
-    """
-
-    # Flag: perp in child's family (based on relationship)
-    df = df.copy()
+    # 1) Perp in child's family? (Father/Mother/Guardian/Sibling bucket)
     df["perp_in_child_family"] = np.where(
         df["perp_relationship"].isin(allowed_relationships), "Y", "N"
     )
 
-    # Attach address info if available (for non-family / address match part)
-    df = attach_primary_address(df, df_add)
+    # 2) Attach primary address and compute address reoccurrence flag
+    #    (same primary address across >1 referral for same long_person_id + person_id)
+    add_prim = df_add.copy()
+    add_prim = add_prim[add_prim["Address Type"].str.lower() == "primary"]
+    add_prim = add_prim[["Referral ID", "Address Line 1", "City", "Zip Code"]].drop_duplicates()
 
-    # ------------------------------------------------------------------
-    # 1) SUMMARY AT REFERRAL_ID + PERSON_ID + ALLEGATION_ID LEVEL
-    # ------------------------------------------------------------------
-    # If you truly have duplicates, this collapses to unique triples
-    # (one row per referral-person-allegation).
-    rpa_cols = ["referral_id", "person_id", "allegation_id"]
-    df_rpa = df.drop_duplicates(subset=rpa_cols).copy()
+    df = df.merge(
+        add_prim,
+        left_on="referral_id",
+        right_on="Referral ID",
+        how="left",
+    )
 
-    # 1.a Perp in child's family: how many Y / N
-    rpa_family_counts = (
-        df_rpa["perp_in_child_family"]
-        .value_counts(dropna=False)
+    # Build a simple address key
+    df["address_key"] = (
+        df["Address Line 1"].fillna("").str.upper().str.strip()
+        + "|"
+        + df["City"].fillna("").str.upper().str.strip()
+        + "|"
+        + df["Zip Code"].fillna("").astype(str).str.strip()
+    )
+    df.loc[df["Address Line 1"].isna(), "address_key"] = np.nan
+
+    # Within same child (long_person_id, person_id) and same address, if there is more
+    # than one distinct referral_id => address exact match reoccurrence.
+    mask = df["address_key"].notna() & (df["address_key"] != "")
+    counts = (
+        df.loc[mask]
+          .groupby(["long_person_id", "person_id", "address_key"])["referral_id"]
+          .transform("nunique")
+    )
+    df["address_exact_match_flag"] = "N"
+    df.loc[mask & (counts > 1), "address_exact_match_flag"] = "Y"
+
+    return df
+
+
+# -------------------------------------------------------------------
+# SUMMARIES
+#   1) At (referral_id, person_id, allegation_id) level
+#   2) At (referral_id, person_id) level
+#
+# For each level:
+#   1. Perp in child's family: Y / N counts
+#   2. Out of Y: reoccurrence_flag Y / N counts
+#   3. Out of N: address_exact_match_flag Y / N and final match Y / N
+# -------------------------------------------------------------------
+
+def build_grain_summaries(df_annot):
+    # -------- Level 1: referral_id + person_id + allegation_id --------
+    lvl1 = (
+        df_annot
+        .groupby(["referral_id", "person_id", "allegation_id"], as_index=False)
+        .agg(
+            perp_in_child_family=("perp_in_child_family",
+                                  lambda s: "Y" if (s == "Y").any() else "N"),
+            perp_reoccurrence_flag=("perp_reoccurrence_flag",
+                                    lambda s: "Y" if (s == "Y").any() else "N"),
+            address_exact_match_flag=("address_exact_match_flag",
+                                      lambda s: "Y" if (s == "Y").any() else "N"),
+        )
+    )
+
+    # 1. Perp in child's family: Y / N counts
+    lvl1_family_counts = (
+        lvl1["perp_in_child_family"]
+        .value_counts()
         .rename_axis("perp_in_child_family")
         .reset_index(name="count")
     )
 
-    # 1.b Out of YES (perp in child's family),
-    #     how many "match on family members" Y / N.
-    # Here we interpret "match on family members" as:
-    #    - perp_in_child_family = 'Y'
-    #    - and final perp_reoccurrence_flag = 'Y'
-    df_rpa["match_on_family_members"] = np.where(
-        (df_rpa["perp_in_child_family"] == "Y")
-        & (df_rpa["perp_reoccurrence_flag"] == "Y"),
-        "Y",
-        "N",
-    )
-
-    rpa_family_match_counts = (
-        df_rpa[df_rpa["perp_in_child_family"] == "Y"]["match_on_family_members"]
-        .value_counts(dropna=False)
-        .rename_axis("match_on_family_members")
-        .reset_index(name="count")
-    )
-
-    # 1.c Out of NO (not in child's family),
-    #     how many exact match on address,
-    #     and how many finally match / not match.
-    non_family_rpa = df_rpa[df_rpa["perp_in_child_family"] == "N"].copy()
-
-    if {"addr_line1", "addr_city", "addr_zip"}.issubset(non_family_rpa.columns):
-        addr_group_cols = [
-            "long_person_id",
-            "person_id",
-            "addr_line1",
-            "addr_city",
-            "addr_zip",
-        ]
-
-        # Size of each (child, address) group
-        non_family_rpa["addr_group_size"] = (
-            non_family_rpa.groupby(addr_group_cols)["referral_id"]
-            .transform("nunique")
-            .fillna(0)
-            .astype(int)
-        )
-
-        # Exact address match if same primary address appears in >1 referral
-        non_family_rpa["address_exact_match"] = np.where(
-            non_family_rpa["addr_group_size"] > 1, "Y", "N"
-        )
-    else:
-        non_family_rpa["address_exact_match"] = "Unknown"
-
-    rpa_nonfamily_address_counts = (
-        non_family_rpa["address_exact_match"]
-        .value_counts(dropna=False)
-        .rename_axis("address_exact_match")
-        .reset_index(name="count")
-    )
-
-    # Final match / not match among non-family
-    rpa_nonfamily_final_match_counts = (
-        non_family_rpa["perp_reoccurrence_flag"]
-        .value_counts(dropna=False)
+    # 2. Out of Y: reoccurrence_flag Y / N
+    lvl1_family_yes = lvl1[lvl1["perp_in_child_family"] == "Y"]
+    lvl1_family_yes_match_counts = (
+        lvl1_family_yes["perp_reoccurrence_flag"]
+        .value_counts()
         .rename_axis("perp_reoccurrence_flag")
         .reset_index(name="count")
     )
 
-    # ------------------------------------------------------------------
-    # 2) SUMMARY AT REFERRAL_ID + PERSON_ID LEVEL
-    # ------------------------------------------------------------------
-    rp_cols = ["referral_id", "person_id"]
-    df_rp = df.drop_duplicates(subset=rp_cols).copy()
+    # 3. Out of N: address_exact_match_flag Y / N and final match Y / N
+    lvl1_family_no = lvl1[lvl1["perp_in_child_family"] == "N"]
 
-    # 2.a Perp in child's family: any within that referral-person
-    df_rp["any_perp_in_child_family"] = (
-        df.groupby(rp_cols)["perp_in_child_family"]
-        .transform(lambda x: "Y" if (x == "Y").any() else "N")
-        .drop_duplicates()
-        .values
-    )
-
-    rp_family_counts = (
-        df_rp["any_perp_in_child_family"]
-        .value_counts(dropna=False)
-        .rename_axis("any_perp_in_child_family")
+    lvl1_nonfam_addr_counts = (
+        lvl1_family_no["address_exact_match_flag"]
+        .value_counts()
+        .rename_axis("address_exact_match_flag")
         .reset_index(name="count")
     )
 
-    # 2.b Final match / not match at referral-person level
-    # We say "Y" if any allegation row for that referral-person has Y.
-    df_rp["any_perp_reoccurrence"] = (
-        df.groupby(rp_cols)["perp_reoccurrence_flag"]
-        .transform(lambda x: "Y" if (x == "Y").any() else "N")
-        .drop_duplicates()
-        .values
-    )
-
-    rp_final_match_counts = (
-        df_rp["any_perp_reoccurrence"]
-        .value_counts(dropna=False)
-        .rename_axis("any_perp_reoccurrence")
+    lvl1_nonfam_final_match_counts = (
+        lvl1_family_no["perp_reoccurrence_flag"]
+        .value_counts()
+        .rename_axis("perp_reoccurrence_flag")
         .reset_index(name="count")
     )
 
-    # You can return a dict of all the summary tables
+    # -------- Level 2: referral_id + person_id --------
+    lvl2 = (
+        df_annot
+        .groupby(["referral_id", "person_id"], as_index=False)
+        .agg(
+            perp_in_child_family=("perp_in_child_family",
+                                  lambda s: "Y" if (s == "Y").any() else "N"),
+            perp_reoccurrence_flag=("perp_reoccurrence_flag",
+                                    lambda s: "Y" if (s == "Y").any() else "N"),
+            address_exact_match_flag=("address_exact_match_flag",
+                                      lambda s: "Y" if (s == "Y").any() else "N"),
+        )
+    )
+
+    lvl2_family_counts = (
+        lvl2["perp_in_child_family"]
+        .value_counts()
+        .rename_axis("perp_in_child_family")
+        .reset_index(name="count")
+    )
+
+    lvl2_family_yes = lvl2[lvl2["perp_in_child_family"] == "Y"]
+    lvl2_family_yes_match_counts = (
+        lvl2_family_yes["perp_reoccurrence_flag"]
+        .value_counts()
+        .rename_axis("perp_reoccurrence_flag")
+        .reset_index(name="count")
+    )
+
+    lvl2_family_no = lvl2[lvl2["perp_in_child_family"] == "N"]
+
+    lvl2_nonfam_addr_counts = (
+        lvl2_family_no["address_exact_match_flag"]
+        .value_counts()
+        .rename_axis("address_exact_match_flag")
+        .reset_index(name="count")
+    )
+
+    lvl2_nonfam_final_match_counts = (
+        lvl2_family_no["perp_reoccurrence_flag"]
+        .value_counts()
+        .rename_axis("perp_reoccurrence_flag")
+        .reset_index(name="count")
+    )
+
     return {
-        "rpa_family_counts": rpa_family_counts,
-        "rpa_family_match_counts": rpa_family_match_counts,
-        "rpa_nonfamily_address_counts": rpa_nonfamily_address_counts,
-        "rpa_nonfamily_final_match_counts": rpa_nonfamily_final_match_counts,
-        "rp_family_counts": rp_family_counts,
-        "rp_final_match_counts": rp_final_match_counts,
+        "lvl1_table": lvl1,
+        "lvl1_family_counts": lvl1_family_counts,
+        "lvl1_family_yes_match_counts": lvl1_family_yes_match_counts,
+        "lvl1_nonfam_addr_counts": lvl1_nonfam_addr_counts,
+        "lvl1_nonfam_final_match_counts": lvl1_nonfam_final_match_counts,
+        "lvl2_table": lvl2,
+        "lvl2_family_counts": lvl2_family_counts,
+        "lvl2_family_yes_match_counts": lvl2_family_yes_match_counts,
+        "lvl2_nonfam_addr_counts": lvl2_nonfam_addr_counts,
+        "lvl2_nonfam_final_match_counts": lvl2_nonfam_final_match_counts,
     }
 
 
 # -------------------------------------------------------------------
-# Example usage (outline)
+# EXAMPLE USAGE
 # -------------------------------------------------------------------
+# df      = your main longitudinal-perp dataframe
+# df_rel  = relatives table
+# df_add  = address table
+
+# 1) Run the matching logic (you already did this step successfully):
 # df_with_flag = add_perp_reoccurrence_flag(df, df_rel, df_add)
-# summaries = summarize_perp_results(df_with_flag, df_add)
-# print(summaries["rpa_family_counts"])
-# print(summaries["rpa_family_match_counts"])
-# print(summaries["rpa_nonfamily_address_counts"])
-# print(summaries["rpa_nonfamily_final_match_counts"])
-# print(summaries["rp_family_counts"])
-# print(summaries["rp_final_match_counts"])
+
+# 2) Add derived flags & build summaries:
+# df_annot = add_perp_in_family_and_address_flags(df_with_flag, df_add)
+# summaries = build_grain_summaries(df_annot)
+
+# For example:
+# print("LEVEL 1 – perp in child's family (Y/N):")
+# print(summaries["lvl1_family_counts"])
+#
+# print("LEVEL 1 – out of family=Y, reoccurrence Y/N:")
+# print(summaries["lvl1_family_yes_match_counts"])
+#
+# print("LEVEL 1 – out of family=N, address exact match Y/N:")
+# print(summaries["lvl1_nonfam_addr_counts"])
+#
+# print("LEVEL 1 – out of family=N, final match Y/N:")
+# print(summaries["lvl1_nonfam_final_match_counts"])
+#
+# Same pattern for LEVEL 2 using the lvl2_* keys.
