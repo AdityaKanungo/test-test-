@@ -3,42 +3,56 @@ import pandas as pd
 df = df.copy()
 
 # ------------------------------------------------------------
-# STEP 1 — Identify all index referrals
+# Collapse to referral-level (unique referral rows)
 # ------------------------------------------------------------
-index_rows = df[df['is_index'] == 'Y'][[
-    'long_person_id', 
+ref = df.groupby(
+    ['long_person_id', 'referral_id'], 
+    as_index=False
+).agg({
+    'referral_type': 'first',
+    'is_index': 'first',
+    'referral_sequence_type': 'first',
+    'subcategory_of_abuse': 'first',
+    'same_gps_subcategory_as_index': 'first'
+})
+
+# ------------------------------------------------------------
+# Identify index referrals (one per long_person_id ideally)
+# ------------------------------------------------------------
+index_ref = ref[ref['is_index'] == 'Y'][[
+    'long_person_id',
+    'referral_id',
     'subcategory_of_abuse'
 ]].rename(columns={'subcategory_of_abuse': 'index_subcategory'})
 
-# Attach index subcategory to all rows
-df = df.merge(index_rows, on='long_person_id', how='left')
+# ------------------------------------------------------------
+# Attach index subcategory to all referral-level rows
+# ------------------------------------------------------------
+ref = ref.merge(index_ref[['long_person_id', 'index_subcategory']],
+                on='long_person_id', how='left')
 
 # ------------------------------------------------------------
-# STEP 2 — Filter subsequent GPS referrals
+# Filter only subsequent GPS referrals at referral-level
 # ------------------------------------------------------------
-subseq_gps = df[
-    (df['referral_sequence_type'] == 'Subsequent') &
-    (df['referral_type'] == 'GPS')
+subseq_gps = ref[
+    (ref['referral_sequence_type'] == 'Subsequent') &
+    (ref['referral_type'] == 'GPS')
 ]
 
 # ------------------------------------------------------------
-# STEP 3 — Flag whether each index referral has ANY subsequent GPS referral
+# Percentage of index referrals that have ≥1 subsequent GPS referral
 # ------------------------------------------------------------
-has_subseq_gps = subseq_gps.groupby('long_person_id').size().reindex(
-    index_rows['long_person_id'],
-    fill_value=0
+has_subseq = subseq_gps.groupby('long_person_id').size().reindex(
+    index_ref['long_person_id'], fill_value=0
 )
 
-# Percentage of index referrals with ≥1 subsequent GPS referral
-pct_index_with_subseq_gps = (has_subseq_gps > 0).mean() * 100
-
-print("Percentage of INDEX referrals with subsequent GPS referrals:")
+pct_index_with_subseq_gps = (has_subseq > 0).mean() * 100
+print("Percentage of INDEX referrals with ≥1 subsequent GPS referral:")
 print(round(pct_index_with_subseq_gps, 2), "%")
 
 # ------------------------------------------------------------
-# STEP 4 — Breakdown: same vs different subcategory
+# Breakdown of same vs different subcategory (referral-level)
 # ------------------------------------------------------------
-breakdown = subseq_gps.groupby('same_gps_subcategory_as_index').size()
-
-print("\nBreakdown of subsequent GPS referrals:")
+breakdown = subseq_gps['same_gps_subcategory_as_index'].value_counts()
+print("\nBreakdown of subsequent GPS referrals by subcategory match:")
 print(breakdown)
