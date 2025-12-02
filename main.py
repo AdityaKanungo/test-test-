@@ -268,23 +268,25 @@ def confirm_likely_match(row1, row2, rule, df_rel, df_add):
 
 def add_perp_reoccurrence_flag(df, df_rel=None, df_add=None):
     """
-    For each (long_person_id, person_id):
+    For each long_person_id:
 
     perp_reoccurrence_flag = 'Y' ONLY when:
     - The perpetrator appears on the *index* referral
       with subcategory_of_abuse = 'Child Sexually Acting Out'
       (is_index == 'Y' and subcategory_of_abuse == 'Child Sexually Acting Out')
-    - AND the same perpetrator appears again on a *Subsequent* referral
-      (referral_sequence_type == 'Subsequent')
-      after the index, within the same longitudinal person id.
+    - AND the same perpetrator appears again on a *later* referral
+      (referral_sequence_type != 'Index', typically 'Subsequent')
+      within the same long_person_id.
 
-    We flag ONLY the Subsequent rows as 'Y'.
+    We flag ONLY the later referral rows as 'Y'.
     All others remain 'N'.
     """
     df = df.copy()
     df["perp_reoccurrence_flag"] = "N"
 
-    group_cols = ["long_person_id", "person_id"]
+    # 🔴 key change: group only by long_person_id
+    group_cols = ["long_person_id"]
+
     needed_cols = group_cols + [
         "is_index",
         "referral_sequence_type",
@@ -301,10 +303,10 @@ def add_perp_reoccurrence_flag(df, df_rel=None, df_add=None):
     if missing:
         raise ValueError(f"df must contain columns: {missing}")
 
-    # We will only mark the "Subsequent" rows where a CSA perp reoccurs
+    # We will only mark the "later" rows where a CSA perp reoccurs
     reocc_idx = set()
 
-    # Work within each longitudinal person + victim person
+    # Work within each longitudinal person
     for _, grp in df.groupby(group_cols):
         idxs = list(grp.index)
         if len(idxs) < 2:
@@ -322,7 +324,7 @@ def add_perp_reoccurrence_flag(df, df_rel=None, df_add=None):
                 if row_i["referral_id"] == row_j["referral_id"]:
                     continue
 
-                # Identify index-CSA vs Subsequent
+                # Identify index-CSA vs later referrals
                 is_index_csa_i = (
                     row_i["is_index"] == "Y"
                     and row_i["subcategory_of_abuse"] == "Child Sexually Acting Out"
@@ -332,13 +334,13 @@ def add_perp_reoccurrence_flag(df, df_rel=None, df_add=None):
                     and row_j["subcategory_of_abuse"] == "Child Sexually Acting Out"
                 )
 
-                is_subseq_i = row_i["referral_sequence_type"] == "Subsequent"
-                is_subseq_j = row_j["referral_sequence_type"] == "Subsequent"
+                is_later_i = row_i["referral_sequence_type"] != "Index"
+                is_later_j = row_j["referral_sequence_type"] != "Index"
 
-                # Only keep pairs where one side is index-CSA and the other is Subsequent
+                # Only keep pairs where one side is index-CSA and the other is later
                 if not (
-                    (is_index_csa_i and is_subseq_j)
-                    or (is_index_csa_j and is_subseq_i)
+                    (is_index_csa_i and is_later_j)
+                    or (is_index_csa_j and is_later_i)
                 ):
                     continue
 
@@ -372,10 +374,10 @@ def add_perp_reoccurrence_flag(df, df_rel=None, df_add=None):
                             matched = True
 
                 if matched:
-                    # Only mark the Subsequent row(s) as reoccurrence
-                    if is_index_csa_i and is_subseq_j:
+                    # Only mark the later row(s) as reoccurrence
+                    if is_index_csa_i and is_later_j:
                         reocc_idx.add(idx_j)
-                    if is_index_csa_j and is_subseq_i:
+                    if is_index_csa_j and is_later_i:
                         reocc_idx.add(idx_i)
 
     if reocc_idx:
