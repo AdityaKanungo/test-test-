@@ -1,222 +1,237 @@
-Crystal clear now — thank you for slowing the carousel so we can step off at the right horse 🎠.
+Yep – we should collapse to referral level first, then do all the logic on that.
+Below is end-to-end code that only uses these columns:
 
-You want the clean, simple escalation sequence:
+cols = [
+    "long_person_id", "referral_id", "referral_type", "allegation_id",
+    "is_index", "subcategory_of_abuse", "same_gps_subcategory_as_index",
+    "referral_sequence_type", "time_since_index_referral"
+]
 
-🎯 “How many GPS referrals happened after the INDEX and before the FIRST CPS?”
-
-Categories should be:
-
-0 GPS before CPS
-
-1 GPS before CPS
-
-2 GPS before CPS
-
-3 GPS before CPS
-
-4+ GPS before CPS
-
-No CPS (child never escalated)
-
-
-No need for time buckets here.
-Just pure counts between index → CPS.
-
-Let’s build that neatly, correctly, and referral-level.
+df = df[cols].copy()
 
 
 ---
 
-✅ STEP 1 — Collapse to referral-level
+0. Go from allegation-level → referral-level
 
-ref = df.groupby(
-    ['long_person_id','referral_id'],
-    as_index=False
-).agg({
-    'referral_type':'first',
-    'referral_sequence_type':'first'
-})
+Multiple allegation rows per referral → we want one row per (person, referral).
 
+# helper: collapse multiple allegation rows into one referral-level row
+def any_Y(s):
+    if (s == "Y").any():  # any Y → Y
+        return "Y"
+    if (s == "N").any():  # otherwise if any N → N
+        return "N"
+    return None           # all None / NA
 
----
+referrals = (
+    df
+    .groupby(
+        ["long_person_id", "referral_id", "referral_type",
+         "referral_sequence_type", "time_since_index_referral"],
+        as_index=False
+    )
+    .agg({
+        "is_index": any_Y,                       # index if any allegation flagged Y
+        "subcategory_of_abuse": lambda s: ", ".join(sorted(s.dropna().unique())),
+        "same_gps_subcategory_as_index": any_Y   # any Y → Y (same as index)
+    })
+)
 
-✅ STEP 2 — Identify the FIRST CPS referral
-
-# Filter to CPS only and take earliest by referral_sequence_type ordering
-first_cps = ref[ref['referral_type']=="CPS"] \
-    .sort_values(['long_person_id','referral_sequence_type']) \
-    .groupby('long_person_id') \
-    .first()[['referral_id']]
-
-first_cps.rename(columns={'referral_id':'first_cps_id'}, inplace=True)
-
-If you have a better chronological field (like actual referral date), we can replace this ordering — for now we rely on referral_sequence_type or the natural sort order you provide.
-
-
----
-
-✅ STEP 3 — Count GPS referrals AFTER index but BEFORE first CPS
-
-We assume you already know the index referral for each long_person_id via is_index == 'Y'.
-
-index_ref = ref[ref['referral_sequence_type']=="Index"] \
-    .groupby('long_person_id') \
-    .first()[['referral_id']]
-
-index_ref.rename(columns={'referral_id':'index_id'}, inplace=True)
+# this `referrals` df is now **referral-level** (what we want)
 
 
 ---
 
-Merge everything:
+1️⃣ Time to first subsequent CPS and GPS (using time_since_index_referral)
 
-merged = ref.merge(index_ref, on='long_person_id', how='left')
-merged = merged.merge(first_cps, on='long_person_id', how='left')
+First, make time_since_index_referral ordered so we can pick the earliest bucket:
+
+import pandas as pd
+
+# adjust this list to match YOUR buckets exactly & in order
+time_order = ["0-3 months", "3-6 months", "6-12 months", ">12 months"]
+
+referrals["time_since_index_referral"] = pd.Categorical(
+    referrals["time_since_index_referral"],
+    categories=time_order,
+    ordered=True
+)
+
+subseq = referrals[referrals["referral_sequence_type"] == "Subsequent"].copy()
+
+# first subsequent CPS/GPS per child
+first_subseq = (
+    subseq
+    .dropna(subset=["time_since_index_referral"])
+    .sort_values(["long_person_id", "referral_type", "time_since_index_referral"])
+    .groupby(["long_person_id", "referral_type"], as_index=False)
+    .first()[["long_person_id", "referral_type", "time_since_index_referral"]]
+)
+
+# breakdown (counts & percent) by type and time bucket
+time_breakdown = (
+    first_subseq
+    .groupby(["referral_type", "time_since_index_referral"])["long_person_id"]
+    .nunique()
+    .reset_index(name="n_children")
+)
+
+time_breakdown["pct_within_type"] = (
+    time_breakdown["n_children"]
+    / time_breakdown.groupby("referral_type")["n_children"].transform("sum")
+    * 100
+)
+
+Suggested visuals (seaborn)
+
+import seaborn as sns
+import matplotlib.pyplot as plt
+
+# Bar chart: time to first subsequent CPS vs GPS
+plt.figure(figsize=(8, 5))
+sns.barplot(
+    data=time_breakdown,
+    x="time_since_index_referral",
+    y="n_children",
+    hue="referral_type"
+)
+plt.xlabel("Time since index referral")
+plt.ylabel("Number of children")
+plt.title("Time to first subsequent CPS / GPS referral")
+plt.xticks(rotation=30)
+plt.tight_layout()
+plt.show()
+
+You can also plot pct_within_type instead of counts if you want a percentage comparison.
 
 
 ---
 
-Logic for counting GPS between index and first CPS
+2️⃣ Number of GPS referrals between index and first CPS
 
-We need a sequencing variable to know what comes between what.
+We want: 1, 2, 3, 4+ GPS, and No CPS.
 
-You have referral_sequence_type but it is categorical (Index, Subsequent).
+2.1 First CPS after index (per child)
 
-Better approach:
-Create a numeric sequence order per long_person_id.
+# first CPS subsequent to index for each child
+cps_subseq = referrals[
+    (referrals["referral_type"] == "CPS") &
+    (referrals["referral_sequence_type"] == "Subsequent")
+].copy()
 
-merged = merged.sort_values(['long_person_id','referral_sequence_type'])  
-merged['seq'] = merged.groupby('long_person_id').cumcount()
+first_cps = (
+    cps_subseq
+    .dropna(subset=["time_since_index_referral"])
+    .sort_values(["long_person_id", "time_since_index_referral"])
+    .groupby("long_person_id", as_index=False)
+    .first()[["long_person_id", "referral_id", "time_since_index_referral"]]
+)
+first_cps = first_cps.rename(columns={"referral_id": "first_cps_referral_id",
+                                      "time_since_index_referral": "first_cps_time"})
 
-Now sequences look like:
+2.2 Count GPS subsequents before that CPS
 
-seq	referral_type	meaning
+# all subsequent GPS referrals
+gps_subseq = referrals[
+    (referrals["referral_type"] == "GPS") &
+    (referrals["referral_sequence_type"] == "Subsequent")
+].copy()
 
-0	Index	first referral
-1	GPS	after index
-2	GPS	after index
-3	CPS	first CPS
-4	GPS/CPS	after CPS
+# attach first CPS bucket to each GPS record (if any) for that child
+gps_with_cps = gps_subseq.merge(
+    first_cps[["long_person_id", "first_cps_time"]],
+    on="long_person_id",
+    how="left"
+)
 
+# only keep GPS that occur before (or in same time bucket as) first CPS
+gps_before_cps = gps_with_cps[
+    gps_with_cps["first_cps_time"].notna() &
+    (gps_with_cps["time_since_index_referral"] <= gps_with_cps["first_cps_time"])
+]
 
-Perfect for "between index and CPS".
+# count distinct GPS referrals before first CPS per child
+gps_counts = (
+    gps_before_cps
+    .groupby("long_person_id")["referral_id"]
+    .nunique()
+    .reset_index(name="n_gps_before_first_cps")
+)
 
+2.3 Create categories including “No CPS”
 
----
+import numpy as np
 
-Compute counts:
+# all children with an index referral
+children_with_index = referrals[referrals["is_index"] == "Y"]["long_person_id"].unique()
 
-def count_gps_between(group):
-    idx_seq = group[group['referral_id']==group['index_id'].iloc[0]]['seq'].iloc[0]
-    
-    # Case 1: HAS CPS
-    if pd.notna(group['first_cps_id'].iloc[0]):
-        cps_seq = group[group['referral_id']==group['first_cps_id'].iloc[0]]['seq'].iloc[0]
-        
-        gps_between = group[
-            (group['seq'] > idx_seq) &
-            (group['seq'] < cps_seq) &
-            (group['referral_type']=="GPS")
-        ]
-        return len(gps_between)
-    
-    # Case 2: NO CPS → count all GPS after index
-    else:
-        gps_after = group[
-            (group['seq'] > idx_seq) &
-            (group['referral_type']=="GPS")
-        ]
-        return f"No CPS ({len(gps_after)})"
+# build base frame with one row per child who has an index
+gps_summary = pd.DataFrame({"long_person_id": children_with_index})
 
-result = merged.groupby('long_person_id').apply(count_gps_between)
+# attach counts of GPS before first CPS (NaN => 0)
+gps_summary = gps_summary.merge(gps_counts, on="long_person_id", how="left")
+gps_summary["n_gps_before_first_cps"] = gps_summary["n_gps_before_first_cps"].fillna(0).astype(int)
 
+# flag whether child ever had a post-index CPS
+gps_summary = gps_summary.merge(
+    first_cps[["long_person_id"]],
+    on="long_person_id",
+    how="left",
+    indicator="has_cps_ind"
+)
+gps_summary["has_cps"] = gps_summary["has_cps_ind"].eq("both")
 
----
-
-✨ Now categorize into 1,2,3,4+, No CPS
-
-def categorize(x):
-    if isinstance(x, str):
+def band(row):
+    if not row["has_cps"]:
         return "No CPS"
-    if x >= 4:
-        return "4+"
-    return str(x)
+    n = row["n_gps_before_first_cps"]
+    if n == 0:
+        return "0 GPS"
+    elif n == 1:
+        return "1 GPS"
+    elif n == 2:
+        return "2 GPS"
+    elif n == 3:
+        return "3 GPS"
+    else:
+        return "4+ GPS"
 
-result_cat = result.apply(categorize)
-print(result_cat.value_counts())
+gps_summary["gps_band"] = gps_summary.apply(band, axis=1)
 
-This produces:
+band_order = ["0 GPS", "1 GPS", "2 GPS", "3 GPS", "4+ GPS", "No CPS"]
 
-Category	Meaning
+gps_band_counts = (
+    gps_summary
+    .groupby("gps_band")["long_person_id"]
+    .nunique()
+    .reindex(band_order)
+    .reset_index(name="n_children")
+)
 
-0	No GPS before CPS
-1	1 GPS before CPS
-2	2 GPS before CPS
-3	3 GPS before CPS
-4+	4 or more GPS before CPS
-No CPS	never escalated
+gps_band_counts["pct_children"] = (
+    gps_band_counts["n_children"] /
+    gps_band_counts["n_children"].sum() * 100
+)
 
+Suggested visual
 
-
----
-
-📊 Recommended Visuals (Seaborn)
-
-These visuals will pop in a dashboard or slide deck.
-
-
----
-
-1️⃣ Bar Chart — Distribution of GPS Counts Before CPS
-
-sns.countplot(x=result_cat, order=["0","1","2","3","4+","No CPS"])
-plt.title("GPS Referrals Between Index and First CPS")
-plt.xlabel("# GPS referrals before CPS")
-plt.ylabel("# Children")
+plt.figure(figsize=(7, 5))
+sns.barplot(
+    data=gps_band_counts,
+    x="gps_band",
+    y="n_children",
+    order=band_order
+)
+plt.xlabel("Number of GPS referrals before first CPS")
+plt.ylabel("Number of children")
+plt.title("GPS referrals between index and first CPS")
+plt.tight_layout()
 plt.show()
 
-
----
-
-2️⃣ Stacked Bar — Escalation vs No Escalation
-
-df_vis = pd.DataFrame({'category': result_cat})
-df_vis['type'] = df_vis['category'].apply(lambda x: "No CPS" if x=="No CPS" else "Has CPS")
-
-sns.countplot(x='type', data=df_vis)
-plt.title("Children With vs Without CPS Escalation")
-plt.xlabel("")
-plt.ylabel("# Children")
-plt.show()
+You can switch y="pct_children" for a percentage plot.
 
 
 ---
 
-3️⃣ Optional Heatmap — GPS Count vs Subcategory
-
-If you want to see escalation risk by abuse type.
-
-heat = df_vis.join(df[['long_person_id','subcategory_of_abuse']].drop_duplicates()
-).pivot_table(index='subcategory_of_abuse', columns='category', aggfunc='size', fill_value=0)
-
-sns.heatmap(heat, annot=True, cmap="Blues")
-plt.title("GPS Before CPS by Subcategory of Abuse")
-plt.show()
-
-
----
-
-🎁 If you want …
-
-I can also build:
-
-Time-based escalation curves
-
-Transition matrices (GPS → CPS → GPS)
-
-Family-level escalation summaries
-
-Cohort tracking panels
-
-
-Just say the word 🌙
+If you paste this in and still see a “single positional indexer out of bounds” error anywhere, send me that exact traceback + the few lines around it and I’ll debug the specific spot.
