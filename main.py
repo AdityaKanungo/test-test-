@@ -1,105 +1,384 @@
-Ah—now we shift the lens.
-Instead of subsequent GPS referrals, you want co-occurring allegations within the SAME referral as the index referral.
+import pandas as pd
+import numpy as np
+import datetime
 
-In other words:
+# -------------------------------------------------------------------
+# Generic helpers
+# -------------------------------------------------------------------
 
-> For every referral where is_index == 'Y' and the index subcategory is Child Sexually Acting Out,
-look at all the other allegations attached to that same referral_id.
-Count which other subcategories appear alongside it across the entire dataset.
-
-
-
-This matches the style of the graphic you shared.
-(Think of the index subcategory as the main note, and we’re listening for harmonies 🎶.)
-
-
----
-
-✅ Step 1 — Filter to index referrals with target subcategory
-
-TARGET = "Child Sexually Acting Out"
-
-index_refs = df[
-    (df['is_index'] == 'Y') &
-    (df['subcategory_of_abuse'] == TARGET)
-][['long_person_id', 'referral_id']]
+def is_blank(x):
+    """
+    Identifies blank values in the key fields.
+    Returns True for blank / NA, False otherwise.
+    """
+    if pd.isna(x):
+        return True
+    if isinstance(x, str) and x.strip() == "":
+        return True
+    if isinstance(x, (np.datetime64, datetime.date)):
+        # let pandas decide if this datetime-like is NA
+        return pd.isna(x)
+    return False
 
 
----
-
-✅ Step 2 — Get all allegations linked to those same referrals
-
-We join back to the full dataframe but exclude the target subcategory.
-
-# Referrals of interest
-ref_ids = index_refs['referral_id'].unique()
-
-# All allegations on these referrals
-cooc = df[df['referral_id'].isin(ref_ids)]
-
-# Remove the target subcategory
-cooc = cooc[cooc['subcategory_of_abuse'] != TARGET]
+def nonblank_equal(a, b):
+    return (not is_blank(a)) and (not is_blank(b)) and a == b
 
 
----
-
-✅ Step 3 — Count co-occurring subcategories
-
-cooc_counts = cooc['subcategory_of_abuse'].value_counts()
-
-print(cooc_counts)
-
-If you want percentages relative to all index referrals in this category:
-
-total_index_referrals = len(index_refs)
-cooc_pct = (cooc_counts / total_index_referrals * 100).round(1)
-
-print(cooc_pct)
+def nonblank_not_equal(a, b):
+    return (not is_blank(a)) and (not is_blank(b)) and a != b
 
 
----
+# -------------------------------------------------------------------
+# DOB helpers
+# -------------------------------------------------------------------
 
-📊 Step 4 — Create a seaborn bar chart (horizontal, like your example)
-
-import seaborn as sns
-import matplotlib.pyplot as plt
-
-plt.figure(figsize=(10,6))
-sns.barplot(x=cooc_pct.values, y=cooc_pct.index)
-
-plt.xlabel("Percent of Index Referrals (Child Sexually Acting Out)")
-plt.ylabel("Co-occurring Allegation Subcategory")
-plt.title("Most Likely Co-Occurring Subcategories\n(Index = Child Sexually Acting Out)")
-
-plt.xlim(0, cooc_pct.max() * 1.15)
-plt.tight_layout()
-plt.show()
-
-
----
-
-🎯 What this yields
-
-You’ll get a ranked table like:
-
-Inappropriate Discipline                       14.2%
-Behavioral Health Concerns – Child             12.7%
-Domestic Violence                                9.8%
-Substance Use by Parent/Caregiver               8.1%
-Conduct by Parent/Caregiver that Places Child…  7.4%
-...
-
-Which matches the structure of the chart in your screenshot.
-Each percentage means:
-
-> “Among all index referrals where the subcategory = Child Sexually Acting Out,
-what proportion also had allegation X on the same referral?”
+def dob_is_strict_match(dob1, dob2, dob_est1, dob_est2):
+    """
+    DOBs are considered a 'strict match' if:
+    - both are non-blank
+    - both are equal
+    - neither is estimated (dob_est != 'Y')
+    """
+    if is_blank(dob1) or is_blank(dob2):
+        return False
+    if dob_est1 == "Y" or dob_est2 == "Y":
+        return False
+    if dob1 != dob2:
+        return False
+    return True
 
 
+def dob_is_strict_not_match(dob1, dob2):
+    """
+    DOBs are considered a 'strict not match' if:
+    - both are non-blank
+    - they are not equal
+    - NO consideration for estimation
+    """
+    if is_blank(dob1) or is_blank(dob2):
+        return False
+    return dob1 != dob2
 
 
----
+# -------------------------------------------------------------------
+# Strong match rules (0-6)
+# -------------------------------------------------------------------
 
-Want me to wrap this into a reusable function?
+def match_rule(r1, r2):
+    """
+    Strong match rules 0–6.
+    r1, r2 are tuples: (first_name, last_name, dob, ssn, dob_est_flag)
+    """
+    fn1, ln1, dob1, ssn1, dob_est1 = r1
+    fn2, ln2, dob2, ssn2, dob_est2 = r2
 
-I can deliver a clean get_cooccurring_subcategories(df, target_subcat) utility that returns counts, percentages, plots, etc.
+    dob_match    = dob_is_strict_match(dob1, dob2, dob_est1, dob_est2)
+    dob_ne_match = dob_is_strict_not_match(dob1, dob2)
+    dob1_blank   = is_blank(dob1)
+    dob2_blank   = is_blank(dob2)
+
+    # Rule 0: FN= LN= DOB= SSN=
+    if nonblank_equal(fn1, fn2) and nonblank_equal(ln1, ln2) \
+       and dob_match and nonblank_equal(ssn1, ssn2):
+        return 0
+
+    # Rule 1: FN= LN= DOB- SSN=
+    if nonblank_equal(fn1, fn2) and nonblank_equal(ln1, ln2) \
+       and dob_ne_match and nonblank_equal(ssn1, ssn2):
+        return 1
+
+    # Rule 2: FN= LN- DOB= SSN=
+    if nonblank_equal(fn1, fn2) and nonblank_not_equal(ln1, ln2) \
+       and dob_match and nonblank_equal(ssn1, ssn2):
+        return 2
+
+    # Rule 3: FN- LN= DOB= SSN=
+    if nonblank_not_equal(fn1, fn2) and nonblank_equal(ln1, ln2) \
+       and dob_match and nonblank_equal(ssn1, ssn2):
+        return 3
+
+    # Rule 4: FN- LN= DOB blank SSN=
+    if nonblank_not_equal(fn1, fn2) and nonblank_equal(ln1, ln2) \
+       and (dob1_blank or dob2_blank) and nonblank_equal(ssn1, ssn2):
+        return 4
+
+    # Rule 5: FN= LN- DOB blank SSN=
+    if nonblank_equal(fn1, fn2) and nonblank_not_equal(ln1, ln2) \
+       and (dob1_blank or dob2_blank) and nonblank_equal(ssn1, ssn2):
+        return 5
+
+    # Rule 6: FN= LN= DOB blank SSN=
+    if nonblank_equal(fn1, fn2) and nonblank_equal(ln1, ln2) \
+       and (dob1_blank or dob2_blank) and nonblank_equal(ssn1, ssn2):
+        return 6
+
+    return None
+
+
+# -------------------------------------------------------------------
+# Likely match rules (7-12)
+# -------------------------------------------------------------------
+
+def likely_match_rule(r1, r2):
+    """
+    Likely match rules 7–12.
+    r1, r2 are tuples: (first_name, last_name, dob, ssn, dob_est_flag)
+    """
+    fn1, ln1, dob1, ssn1, dob_est1 = r1
+    fn2, ln2, dob2, ssn2, dob_est2 = r2
+
+    dob1_blank   = is_blank(dob1)
+    dob2_blank   = is_blank(dob2)
+    dob_match    = dob_is_strict_match(dob1, dob2, dob_est1, dob_est2)
+    dob_ne_match = dob_is_strict_not_match(dob1, dob2)
+
+    # 7: FN= LN= DOB- SSN=
+    if nonblank_equal(fn1, fn2) and nonblank_equal(ln1, ln2) \
+       and dob_ne_match and nonblank_equal(ssn1, ssn2):
+        return 7
+
+    # 8: FN= LN- DOB= SSN=
+    if nonblank_equal(fn1, fn2) and nonblank_not_equal(ln1, ln2) \
+       and dob_match and nonblank_equal(ssn1, ssn2):
+        return 8
+
+    # 9: FN- LN= DOB= SSN blank
+    if nonblank_not_equal(fn1, fn2) and nonblank_equal(ln1, ln2) \
+       and dob_match and (is_blank(ssn1) or is_blank(ssn2)):
+        return 9
+
+    # 10: FN= LN- DOB= SSN blank
+    if nonblank_equal(fn1, fn2) and nonblank_not_equal(ln1, ln2) \
+       and dob_match and (is_blank(ssn1) or is_blank(ssn2)):
+        return 10
+
+    # 11: FN= LN= DOB- SSN blank
+    if nonblank_equal(fn1, fn2) and nonblank_equal(ln1, ln2) \
+       and dob_ne_match and (is_blank(ssn1) or is_blank(ssn2)):
+        return 11
+
+    # 12: FN- LN= DOB- SSN=
+    if nonblank_not_equal(fn1, fn2) and nonblank_equal(ln1, ln2) \
+       and dob_ne_match and nonblank_equal(ssn1, ssn2):
+        return 12
+
+    return None
+
+
+# -------------------------------------------------------------------
+# Relationship / address helpers for likely matches
+# -------------------------------------------------------------------
+
+allowed_relationships = [
+    "Father-Adoptive", "Father-Biological", "Father-Unknown",
+    "Mother-Adoptive", "Mother-Biological", "Mother-Unknown",
+    "Guardian-Unknown", "Guardian-Legal", "Guardian-Non-Legal",
+    "Guardian-Ad Litem", "Guardian-Court Ordered",
+    "Sibling-Full", "Sibling-Maternal Half", "Sibling-Paternal Half",
+]
+
+
+def relatives_for_referral(df_rel, referral_id, relationship):
+    """
+    Return a list of (fn, ln, dob, ssn, dob_est) tuples for relatives
+    in df_rel for that referral and relationship.
+    """
+    rel = df_rel[
+        (df_rel["referral_id"] == referral_id) &
+        (df_rel["relative_relationship"] == relationship)
+    ].copy()
+
+    if rel.empty:
+        return []
+
+    return list(
+        zip(
+            rel["relative_first_name"],
+            rel["relative_last_name"],
+            rel["relative_date_of_birth"],
+            rel["relative_social_security_number"],
+            rel["relative_date_of_birth_estimated"],
+        )
+    )
+
+
+def primary_address_for_referral(df_add, referral_id):
+    """
+    Return (address_line_1, city, zip) for the 'Primary' address
+    in the address table, or None if not found.
+    """
+    add = df_add[
+        (df_add["Referral ID"] == referral_id) &
+        (df_add["Address Type"].str.lower() == "primary")
+    ]
+
+    if add.empty:
+        return None
+
+    row = add.iloc[0]
+    return (
+        row.get("Address Line 1"),
+        row.get("City"),
+        row.get("Zip Code"),
+    )
+
+
+def confirm_likely_match(row1, row2, rule, df_rel, df_add):
+    """
+    Extra confirmation step for likely matches 7-12:
+
+    1) If perp_relationship is in allowed_relationships:
+       - look up relatives with that relationship for both referrals,
+       - if any relative pair is a strong match (0-6) -> True.
+
+    2) Otherwise, fall back to address comparison:
+       - if primary address (line1 + city + zip) matches -> True.
+    """
+    relationship1 = row1.get("perp_relationship")
+    relationship2 = row2.get("perp_relationship")
+
+    # Relationship-based confirmation
+    if (
+        relationship1 == relationship2
+        and relationship1 in allowed_relationships
+        and df_rel is not None
+    ):
+        rels1 = relatives_for_referral(df_rel, row1["referral_id"], relationship1)
+        rels2 = relatives_for_referral(df_rel, row2["referral_id"], relationship2)
+
+        for r1 in rels1:
+            for r2 in rels2:
+                if match_rule(r1, r2) is not None:   # any strong rule 0-6
+                    return True
+
+    # Address-based confirmation
+    if df_add is not None:
+        addr1 = primary_address_for_referral(df_add, row1["referral_id"])
+        addr2 = primary_address_for_referral(df_add, row2["referral_id"])
+        if addr1 and addr2 and addr1 == addr2:
+            return True
+
+    return False
+
+
+# -------------------------------------------------------------------
+# Main function: add perp_reoccurrence_flag(Y/N)
+# -------------------------------------------------------------------
+
+def add_perp_reoccurrence_flag(df, df_rel=None, df_add=None):
+    """
+    For each (long_person_id, person_id):
+
+    perp_reoccurrence_flag = 'Y' ONLY when:
+    - The perpetrator appears on the *index* referral
+      with subcategory_of_abuse = 'Child Sexually Acting Out'
+      (is_index == 'Y' and subcategory_of_abuse == 'Child Sexually Acting Out')
+    - AND the same perpetrator appears again on a *Subsequent* referral
+      (referral_sequence_type == 'Subsequent')
+      after the index, within the same longitudinal person id.
+
+    We flag ONLY the Subsequent rows as 'Y'.
+    All others remain 'N'.
+    """
+    df = df.copy()
+    df["perp_reoccurrence_flag"] = "N"
+
+    group_cols = ["long_person_id", "person_id"]
+    needed_cols = group_cols + [
+        "is_index",
+        "referral_sequence_type",
+        "subcategory_of_abuse",
+        "referral_id",
+        "perp_first_name",
+        "perp_last_name",
+        "perp_date_of_birth",
+        "perp_date_of_birth_estimated",
+        "perp_social_security_number",
+        "perp_relationship",
+    ]
+    missing = [c for c in needed_cols if c not in df.columns]
+    if missing:
+        raise ValueError(f"df must contain columns: {missing}")
+
+    # We will only mark the "Subsequent" rows where a CSA perp reoccurs
+    reocc_idx = set()
+
+    # Work within each longitudinal person + victim person
+    for _, grp in df.groupby(group_cols):
+        idxs = list(grp.index)
+        if len(idxs) < 2:
+            continue
+
+        for i in range(len(idxs)):
+            for j in range(i + 1, len(idxs)):
+                idx_i = idxs[i]
+                idx_j = idxs[j]
+
+                row_i = df.loc[idx_i]
+                row_j = df.loc[idx_j]
+
+                # Must be different referrals (referral-level, not row-level)
+                if row_i["referral_id"] == row_j["referral_id"]:
+                    continue
+
+                # Identify index-CSA vs Subsequent
+                is_index_csa_i = (
+                    row_i["is_index"] == "Y"
+                    and row_i["subcategory_of_abuse"] == "Child Sexually Acting Out"
+                )
+                is_index_csa_j = (
+                    row_j["is_index"] == "Y"
+                    and row_j["subcategory_of_abuse"] == "Child Sexually Acting Out"
+                )
+
+                is_subseq_i = row_i["referral_sequence_type"] == "Subsequent"
+                is_subseq_j = row_j["referral_sequence_type"] == "Subsequent"
+
+                # Only keep pairs where one side is index-CSA and the other is Subsequent
+                if not (
+                    (is_index_csa_i and is_subseq_j)
+                    or (is_index_csa_j and is_subseq_i)
+                ):
+                    continue
+
+                # Build perpetrator tuples
+                r1 = (
+                    row_i["perp_first_name"],
+                    row_i["perp_last_name"],
+                    row_i["perp_date_of_birth"],
+                    row_i["perp_social_security_number"],
+                    row_i["perp_date_of_birth_estimated"],
+                )
+                r2 = (
+                    row_j["perp_first_name"],
+                    row_j["perp_last_name"],
+                    row_j["perp_date_of_birth"],
+                    row_j["perp_social_security_number"],
+                    row_j["perp_date_of_birth_estimated"],
+                )
+
+                # Step 1: strong match?
+                rule = match_rule(r1, r2)
+                matched = False
+
+                if rule is not None:
+                    matched = True
+                else:
+                    # Step 2: likely match + extra checks
+                    lk_rule = likely_match_rule(r1, r2)
+                    if lk_rule is not None:
+                        if confirm_likely_match(row_i, row_j, lk_rule, df_rel, df_add):
+                            matched = True
+
+                if matched:
+                    # Only mark the Subsequent row(s) as reoccurrence
+                    if is_index_csa_i and is_subseq_j:
+                        reocc_idx.add(idx_j)
+                    if is_index_csa_j and is_subseq_i:
+                        reocc_idx.add(idx_i)
+
+    if reocc_idx:
+        df.loc[list(reocc_idx), "perp_reoccurrence_flag"] = "Y"
+
+    return df
