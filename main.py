@@ -1,237 +1,136 @@
-Yep – we should collapse to referral level first, then do all the logic on that.
-Below is end-to-end code that only uses these columns:
+Here’s a clear path through your data forest 🌲—we’ll pluck out the number of GPS referrals that occur after the index referral but before the FIRST CPS referral, then bucket them into:
 
-cols = [
-    "long_person_id", "referral_id", "referral_type", "allegation_id",
-    "is_index", "subcategory_of_abuse", "same_gps_subcategory_as_index",
-    "referral_sequence_type", "time_since_index_referral"
-]
+0, 1, 2, 3+, and No CPS
 
-df = df[cols].copy()
+…and finally give you a tidy table you can graph.
 
 
 ---
 
-0. Go from allegation-level → referral-level
+✅ Step 1 — Define the logic
 
-Multiple allegation rows per referral → we want one row per (person, referral).
+For each index referral (where is_index == 'Y'):
 
-# helper: collapse multiple allegation rows into one referral-level row
-def any_Y(s):
-    if (s == "Y").any():  # any Y → Y
-        return "Y"
-    if (s == "N").any():  # otherwise if any N → N
-        return "N"
-    return None           # all None / NA
+1. Identify its referral date (or sequence order—whatever your data uses).
 
-referrals = (
-    df
-    .groupby(
-        ["long_person_id", "referral_id", "referral_type",
-         "referral_sequence_type", "time_since_index_referral"],
-        as_index=False
-    )
-    .agg({
-        "is_index": any_Y,                       # index if any allegation flagged Y
-        "subcategory_of_abuse": lambda s: ", ".join(sorted(s.dropna().unique())),
-        "same_gps_subcategory_as_index": any_Y   # any Y → Y (same as index)
+
+2. Look forward in time at subsequent referrals for the same long_person_id.
+
+
+3. Count GPS referrals that occur after index and before the first CPS referral.
+
+
+4. If no CPS ever occurs → bucket = "No CPS".
+
+
+5. Otherwise, bucket as:
+
+0
+
+1
+
+2
+
+3+
+
+
+
+
+
+---
+
+✅ Step 2 — Example Pandas code
+
+Assuming your dataframe is named df and referral order is determined by something like referral_id or another chronological field.
+
+df_sorted = df.sort_values(['long_person_id', 'referral_id'])
+
+index_refs = df_sorted[df_sorted['is_index'] == 'Y']
+
+results = []
+
+for idx, row in index_refs.iterrows():
+    pid = row['long_person_id']
+    idx_referral = row['referral_id']
+
+    # All later referrals for this person
+    later = df_sorted[(df_sorted['long_person_id'] == pid) &
+                      (df_sorted['referral_id'] > idx_referral)]
+
+    # Find first CPS referral
+    first_cps = later[later['referral_type'] == 'CPS']
+    if len(first_cps) > 0:
+        first_cps_referral_id = first_cps['referral_id'].min()
+
+        gps_between = later[(later['referral_type'] == 'GPS') &
+                            (later['referral_id'] < first_cps_referral_id)]
+        gps_count = gps_between.shape[0]
+
+        # bucketize
+        if gps_count == 0: bucket = "0"
+        elif gps_count == 1: bucket = "1"
+        elif gps_count == 2: bucket = "2"
+        else: bucket = "3+"
+    else:
+        bucket = "No CPS"
+
+    results.append({
+        'long_person_id': pid,
+        'index_referral_id': idx_referral,
+        'gps_before_cps': gps_count if bucket != "No CPS" else None,
+        'bucket': bucket
     })
-)
 
-# this `referrals` df is now **referral-level** (what we want)
+results_df = pd.DataFrame(results)
 
 
 ---
 
-1️⃣ Time to first subsequent CPS and GPS (using time_since_index_referral)
+✅ Step 3 — Get counts & percentages for your bar chart
 
-First, make time_since_index_referral ordered so we can pick the earliest bucket:
+summary = results_df['bucket'].value_counts().sort_index()
 
-import pandas as pd
+summary_pct = (summary / summary.sum() * 100).round(1)
 
-# adjust this list to match YOUR buckets exactly & in order
-time_order = ["0-3 months", "3-6 months", "6-12 months", ">12 months"]
+final_summary = pd.DataFrame({
+    '# Index Referrals': summary,
+    '% Index Referrals': summary_pct
+})
 
-referrals["time_since_index_referral"] = pd.Categorical(
-    referrals["time_since_index_referral"],
-    categories=time_order,
-    ordered=True
-)
+print(final_summary)
 
-subseq = referrals[referrals["referral_sequence_type"] == "Subsequent"].copy()
+This will give you a table like:
 
-# first subsequent CPS/GPS per child
-first_subseq = (
-    subseq
-    .dropna(subset=["time_since_index_referral"])
-    .sort_values(["long_person_id", "referral_type", "time_since_index_referral"])
-    .groupby(["long_person_id", "referral_type"], as_index=False)
-    .first()[["long_person_id", "referral_type", "time_since_index_referral"]]
-)
+bucket	# Index Referrals	% Index Referrals
 
-# breakdown (counts & percent) by type and time bucket
-time_breakdown = (
-    first_subseq
-    .groupby(["referral_type", "time_since_index_referral"])["long_person_id"]
-    .nunique()
-    .reset_index(name="n_children")
-)
+0	142	58.1%
+1	55	22.5%
+2	26	10.6%
+3+	12	4.9%
+No CPS	9	3.7%
 
-time_breakdown["pct_within_type"] = (
-    time_breakdown["n_children"]
-    / time_breakdown.groupby("referral_type")["n_children"].transform("sum")
-    * 100
-)
 
-Suggested visuals (seaborn)
 
-import seaborn as sns
+---
+
+📊 Step 4 — Bar chart example
+
 import matplotlib.pyplot as plt
 
-# Bar chart: time to first subsequent CPS vs GPS
-plt.figure(figsize=(8, 5))
-sns.barplot(
-    data=time_breakdown,
-    x="time_since_index_referral",
-    y="n_children",
-    hue="referral_type"
-)
-plt.xlabel("Time since index referral")
-plt.ylabel("Number of children")
-plt.title("Time to first subsequent CPS / GPS referral")
-plt.xticks(rotation=30)
-plt.tight_layout()
-plt.show()
+final_summary['# Index Referrals'].plot(kind='bar')
 
-You can also plot pct_within_type instead of counts if you want a percentage comparison.
+plt.title("GPS Referrals Between Index and First CPS")
+plt.xlabel("Bucket")
+plt.ylabel("# of Index Referrals")
+plt.show()
 
 
 ---
 
-2️⃣ Number of GPS referrals between index and first CPS
+If you'd like…
 
-We want: 1, 2, 3, 4+ GPS, and No CPS.
+✨ I can generate the graph for you
+✨ Or convert this into a function
+✨ Or help you apply grouping by year, geography, demographic factors, etc.
 
-2.1 First CPS after index (per child)
-
-# first CPS subsequent to index for each child
-cps_subseq = referrals[
-    (referrals["referral_type"] == "CPS") &
-    (referrals["referral_sequence_type"] == "Subsequent")
-].copy()
-
-first_cps = (
-    cps_subseq
-    .dropna(subset=["time_since_index_referral"])
-    .sort_values(["long_person_id", "time_since_index_referral"])
-    .groupby("long_person_id", as_index=False)
-    .first()[["long_person_id", "referral_id", "time_since_index_referral"]]
-)
-first_cps = first_cps.rename(columns={"referral_id": "first_cps_referral_id",
-                                      "time_since_index_referral": "first_cps_time"})
-
-2.2 Count GPS subsequents before that CPS
-
-# all subsequent GPS referrals
-gps_subseq = referrals[
-    (referrals["referral_type"] == "GPS") &
-    (referrals["referral_sequence_type"] == "Subsequent")
-].copy()
-
-# attach first CPS bucket to each GPS record (if any) for that child
-gps_with_cps = gps_subseq.merge(
-    first_cps[["long_person_id", "first_cps_time"]],
-    on="long_person_id",
-    how="left"
-)
-
-# only keep GPS that occur before (or in same time bucket as) first CPS
-gps_before_cps = gps_with_cps[
-    gps_with_cps["first_cps_time"].notna() &
-    (gps_with_cps["time_since_index_referral"] <= gps_with_cps["first_cps_time"])
-]
-
-# count distinct GPS referrals before first CPS per child
-gps_counts = (
-    gps_before_cps
-    .groupby("long_person_id")["referral_id"]
-    .nunique()
-    .reset_index(name="n_gps_before_first_cps")
-)
-
-2.3 Create categories including “No CPS”
-
-import numpy as np
-
-# all children with an index referral
-children_with_index = referrals[referrals["is_index"] == "Y"]["long_person_id"].unique()
-
-# build base frame with one row per child who has an index
-gps_summary = pd.DataFrame({"long_person_id": children_with_index})
-
-# attach counts of GPS before first CPS (NaN => 0)
-gps_summary = gps_summary.merge(gps_counts, on="long_person_id", how="left")
-gps_summary["n_gps_before_first_cps"] = gps_summary["n_gps_before_first_cps"].fillna(0).astype(int)
-
-# flag whether child ever had a post-index CPS
-gps_summary = gps_summary.merge(
-    first_cps[["long_person_id"]],
-    on="long_person_id",
-    how="left",
-    indicator="has_cps_ind"
-)
-gps_summary["has_cps"] = gps_summary["has_cps_ind"].eq("both")
-
-def band(row):
-    if not row["has_cps"]:
-        return "No CPS"
-    n = row["n_gps_before_first_cps"]
-    if n == 0:
-        return "0 GPS"
-    elif n == 1:
-        return "1 GPS"
-    elif n == 2:
-        return "2 GPS"
-    elif n == 3:
-        return "3 GPS"
-    else:
-        return "4+ GPS"
-
-gps_summary["gps_band"] = gps_summary.apply(band, axis=1)
-
-band_order = ["0 GPS", "1 GPS", "2 GPS", "3 GPS", "4+ GPS", "No CPS"]
-
-gps_band_counts = (
-    gps_summary
-    .groupby("gps_band")["long_person_id"]
-    .nunique()
-    .reindex(band_order)
-    .reset_index(name="n_children")
-)
-
-gps_band_counts["pct_children"] = (
-    gps_band_counts["n_children"] /
-    gps_band_counts["n_children"].sum() * 100
-)
-
-Suggested visual
-
-plt.figure(figsize=(7, 5))
-sns.barplot(
-    data=gps_band_counts,
-    x="gps_band",
-    y="n_children",
-    order=band_order
-)
-plt.xlabel("Number of GPS referrals before first CPS")
-plt.ylabel("Number of children")
-plt.title("GPS referrals between index and first CPS")
-plt.tight_layout()
-plt.show()
-
-You can switch y="pct_children" for a percentage plot.
-
-
----
-
-If you paste this in and still see a “single positional indexer out of bounds” error anywhere, send me that exact traceback + the few lines around it and I’ll debug the specific spot.
+Just tell me which direction you'd like the analytic compass to swing.
