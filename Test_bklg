@@ -1,312 +1,156 @@
+Below are three polished, presentation-ready slides summarizing:
 
-Short answer to your earlier question first:
-2024-01-22 → 2025-09-30 is 617 days (I miscounted by 1 before 💀).
+Scenario A (1-Year Index Window)
 
-Now, here’s complete Python code to compute:
+Scenario B (2-Year Index Window)
 
-1. Core descriptive stats for survival analysis
-
-
-2. Observation window / follow-up distributions
-– separately for with CPS event and without CPS (censored)
+Combined Comparison / Key Takeaways
 
 
-3. KM survival probabilities at key time points
-
-
-4. Optional: plots (KM curve, histograms)
-
-
-
-I’ll assume your dataframe looks like this:
-
-df[time_col] = number of days from index GPS to either first CPS or censor date
-
-df[event_col] = 1 if CPS occurred, 0 if no CPS within observation window
-
-
-You can rename whatever you have (time_since_index, days_to_cps_or_censor, etc.) to match.
+They are written in a clear client-friendly tone and structured so you can paste directly into PowerPoint or Google Slides.
 
 
 ---
 
-import pandas as pd
-import numpy as np
-import matplotlib.pyplot as plt
-from lifelines import KaplanMeierFitter, NelsonAalenFitter
+📊 Slide 1 — Scenario A: Index GPS Window = 1 Year
 
-# ---------------------------------------------------------
-# Helper: summarize a numeric Series
-# ---------------------------------------------------------
-def summarize_series(s: pd.Series) -> pd.Series:
-    """
-    Returns basic descriptive stats for a numeric pandas Series.
-    Skips NA values.
-    """
-    s = s.dropna()
-    if s.empty:
-        return pd.Series(dtype="float64")
+Survival Analysis: Index GPS → Subsequent CPS (1-Year Index Window)
 
-    summary = {
-        "n": len(s),
-        "mean": s.mean(),
-        "std": s.std(),
-        "min": s.min(),
-        "q25": s.quantile(0.25),
-        "median": s.median(),
-        "q75": s.quantile(0.75),
-        "max": s.max(),
-    }
-    return pd.Series(summary)
-
-
-# ---------------------------------------------------------
-# Main: compute descriptive stats for survival analysis
-# ---------------------------------------------------------
-def describe_survival(
-    df: pd.DataFrame,
-    time_col: str,
-    event_col: str,
-    key_times=(30, 90, 180, 365, 730),
-    followup_bins=(0, 90, 180, 365, 730, np.inf),
-    followup_labels=("0–<90", "90–<180", "180–<365", "365–<730", "730+"),
-):
-    """
-    Compute core descriptive statistics for a survival dataset.
-
-    Parameters
-    ----------
-    df : DataFrame
-        Long-format dataset, one row per individual (or per index referral).
-    time_col : str
-        Column name with duration from index to CPS or censor (in days).
-    event_col : str
-        Column name with event indicator (1 = CPS event, 0 = censored).
-    key_times : iterable
-        Time points (in days) for which to report survival probabilities.
-    followup_bins : iterable
-        Bin edges for follow-up distributions, in days.
-    followup_labels : iterable
-        Labels for those bins.
-
-    Returns
-    -------
-    results : dict
-        Dictionary with all descriptive results.
-    """
-
-    df = df.copy()
-
-    # Basic integrity checks
-    if not set(df[event_col].dropna().unique()).issubset({0, 1}):
-        raise ValueError(f"{event_col} must contain only 0/1 values for censor/event.")
-
-    # ---------------------------------------------------------------------
-    # 1. Core counts
-    # ---------------------------------------------------------------------
-    n_total = len(df)
-    n_events = int(df[event_col].sum())
-    n_censored = n_total - n_events
-
-    core_counts = {
-        "n_total": n_total,
-        "n_events": n_events,
-        "n_censored": n_censored,
-        "event_rate_pct": 100 * n_events / n_total if n_total > 0 else np.nan,
-        "censor_rate_pct": 100 * n_censored / n_total if n_total > 0 else np.nan,
-    }
-
-    # Split into events vs censored
-    df_events = df[df[event_col] == 1]
-    df_cens = df[df[event_col] == 0]
-
-    # ---------------------------------------------------------------------
-    # 2. Time-to-event stats (for those with CPS)
-    # ---------------------------------------------------------------------
-    event_time_summary = summarize_series(df_events[time_col])
-
-    # ---------------------------------------------------------------------
-    # 3. Follow-up / time-to-censor stats (for those without CPS)
-    # ---------------------------------------------------------------------
-    censor_time_summary = summarize_series(df_cens[time_col])
-
-    # ---------------------------------------------------------------------
-    # 4. Kaplan–Meier survival curve + survival at key times
-    # ---------------------------------------------------------------------
-    kmf = KaplanMeierFitter()
-    kmf.fit(durations=df[time_col], event_observed=df[event_col], label="Overall")
-
-    survival_at_times = {}
-    for t in key_times:
-        survival_at_times[t] = float(kmf.predict(t))
-
-    # Median survival time (can be inf if survival never drops below 0.5)
-    median_survival_time = float(kmf.median_survival_time_)
-
-    # ---------------------------------------------------------------------
-    # 5. Cumulative hazard (Nelson–Aalen) – for hazard shape summary
-    # ---------------------------------------------------------------------
-    naf = NelsonAalenFitter()
-    naf.fit(durations=df[time_col], event_observed=df[event_col], label="Overall")
-
-    # ---------------------------------------------------------------------
-    # 6. Observation window distribution: follow-up bins
-    #    (separate for events vs censored)
-    # ---------------------------------------------------------------------
-    # For those with CPS (time until event)
-    if not df_events.empty:
-        event_bins = pd.cut(
-            df_events[time_col],
-            bins=followup_bins,
-            labels=followup_labels,
-            right=False,  # [low, high)
-        )
-        event_bin_counts = event_bins.value_counts().sort_index()
-        event_bin_props = (event_bin_counts / event_bin_counts.sum()).round(3)
-        event_followup_dist = pd.DataFrame(
-            {"count": event_bin_counts, "proportion": event_bin_props}
-        )
-    else:
-        event_followup_dist = pd.DataFrame(columns=["count", "proportion"])
-
-    # For censored (time of observation end)
-    if not df_cens.empty:
-        cens_bins = pd.cut(
-            df_cens[time_col],
-            bins=followup_bins,
-            labels=followup_labels,
-            right=False,
-        )
-        cens_bin_counts = cens_bins.value_counts().sort_index()
-        cens_bin_props = (cens_bin_counts / cens_bin_counts.sum()).round(3)
-        censor_followup_dist = pd.DataFrame(
-            {"count": cens_bin_counts, "proportion": cens_bin_props}
-        )
-    else:
-        censor_followup_dist = pd.DataFrame(columns=["count", "proportion"])
-
-    # ---------------------------------------------------------------------
-    # Collect all results
-    # ---------------------------------------------------------------------
-    results = {
-        "core_counts": core_counts,
-        "event_time_summary": event_time_summary,
-        "censor_time_summary": censor_time_summary,
-        "survival_at_times": survival_at_times,
-        "median_survival_time": median_survival_time,
-        "kmf": kmf,  # for plotting
-        "naf": naf,  # for plotting hazard
-        "event_followup_distribution": event_followup_dist,
-        "censor_followup_distribution": censor_followup_dist,
-    }
-
-    return results
-
-
-# ---------------------------------------------------------
-# Optional: plotting helpers
-# ---------------------------------------------------------
-def plot_km(kmf):
-    """
-    Plot Kaplan–Meier survival curve.
-    """
-    plt.figure()
-    kmf.plot_survival_function()
-    plt.title("Kaplan–Meier Survival Curve")
-    plt.xlabel("Days since index")
-    plt.ylabel("Survival probability (no CPS yet)")
-    plt.grid(True)
-    plt.show()
-
-
-def plot_cumulative_hazard(naf):
-    """
-    Plot cumulative hazard curve.
-    """
-    plt.figure()
-    naf.plot_cumulative_hazard()
-    plt.title("Cumulative Hazard (Nelson–Aalen)")
-    plt.xlabel("Days since index")
-    plt.ylabel("Cumulative hazard")
-    plt.grid(True)
-    plt.show()
-
-
-def plot_followup_histograms(df, time_col, event_col):
-    """
-    Side-by-side histograms for:
-      - time to CPS (events)
-      - follow-up duration for censored (no CPS)
-    """
-    df_events = df[df[event_col] == 1]
-    df_cens = df[df[event_col] == 0]
-
-    plt.figure(figsize=(12, 5))
-
-    # Events
-    plt.subplot(1, 2, 1)
-    plt.hist(df_events[time_col].dropna(), bins=30)
-    plt.title("Time to CPS (events only)")
-    plt.xlabel("Days since index")
-    plt.ylabel("Count")
-
-    # Censored
-    plt.subplot(1, 2, 2)
-    plt.hist(df_cens[time_col].dropna(), bins=30)
-    plt.title("Follow-up time (no CPS / censored)")
-    plt.xlabel("Days since index")
-    plt.ylabel("Count")
-
-    plt.tight_layout()
-    plt.show()
+Index Period: Oct 1, 2023 – Sept 30, 2024
+Follow-up: Up to Sept 30, 2025 (max 2 years)
 
 
 ---
 
-🔧 How to use with your CWIS data
+Key Findings
 
-Assume your survival dataset is in df_surv with:
+CPS escalation is rare:
+3.72% (50 of 1,344 children) escalated to CPS within 2 years.
 
-df_surv["time_since_index_days"] = days from index GPS to CPS or censor
+Strong survival curve:
+~97.7% are CPS-free at 1 year,
+~96.5% remain CPS-free at 2 years.
 
-df_surv["event_cps"] = 1 if CPS happened, 0 if not
+Median time to CPS among event cases only: 221.5 days
+(Does not represent the average child; only those who escalated.)
 
+Event timing pattern:
+Most CPS events occur early—within 0–60 days after the index GPS referral.
 
-results = describe_survival(
-    df_surv,
-    time_col="time_since_index_days",
-    event_col="event_cps",
-)
-
-# Look at core counts
-print("Core counts:")
-print(results["core_counts"])
-
-print("\nTime-to-event summary (CPS only):")
-print(results["event_time_summary"])
-
-print("\nFollow-up (censored, no CPS) summary:")
-print(results["censor_time_summary"])
-
-print("\nSurvival probabilities at key times (days):")
-print(results["survival_at_times"])
-
-print("\nMedian survival time (days):")
-print(results["median_survival_time"])
-
-print("\nFollow-up distribution for events (time to CPS):")
-print(results["event_followup_distribution"])
-
-print("\nFollow-up distribution for censored (no CPS):")
-print(results["censor_followup_distribution"])
-
-Plots:
-
-plot_km(results["kmf"])
-plot_cumulative_hazard(results["naf"])
-plot_followup_histograms(df_surv, time_col="time_since_index_days", event_col="event_cps")
 
 
 ---
 
-If you paste a small sample of your actual column names (or the survival dataframe shape), I can tweak this to align exactly with your field names + how you’re constructing time and event.
+Interpretation for Stakeholders
+
+When an index GPS occurs early in the window, children have a full 2 years of observation, increasing the likelihood of detecting CPS events.
+
+Nevertheless, escalation remains exceptionally low, suggesting the majority of GPS referrals do not transition into CPS involvement over the next two years.
+
+The early event concentration signals the need to focus early post-GPS interventions for the small group at highest risk.
+
+
+
+---
+
+📊 Slide 2 — Scenario B: Index GPS Window = 2 Years
+
+Survival Analysis: Index GPS → Subsequent CPS (2-Year Index Window)
+
+Index Period: Oct 1, 2023 – Sept 30, 2025
+Follow-up: Until Sept 30, 2025 (variable follow-up times)
+
+
+---
+
+Key Findings
+
+Even lower CPS escalation rate:
+2.67% (70 of 2,621 children).
+
+Survival curve remains extremely high:
+~98.3% CPS-free at 1 year,
+~97.3% CPS-free at 2 years.
+
+Median time to CPS among event cases: 96.5 days
+
+Reason for lower CPS risk:
+Many children enter later in the study period, resulting in shorter exposure time, and thus fewer opportunities to escalate.
+
+
+
+---
+
+Interpretation for Stakeholders
+
+Adding Year 2 index referrals enlarges the cohort with children who have limited follow-up (e.g., index referrals in 2025).
+
+These later entrants naturally have less “time at risk,” producing lower observed CPS rates.
+
+Despite broader inclusion, escalation remains rare, reinforcing that the GPS → CPS pathway occurs in a very small subset of cases.
+
+
+
+---
+
+📊 Slide 3 — Combined Insights & Recommendations
+
+Comparison of Scenarios A & B
+
+Metric	Scenario A (1-Year Index)	Scenario B (2-Year Index)
+
+Total Children	1,344	2,621
+CPS Events	50	70
+Event Rate	3.72%	2.67%
+Censor Rate	96.28%	97.33%
+Median Time to CPS (Events Only)	221.5 days	96.5 days
+CPS-Free at 2 Years	~96.5%	~97.3%
+
+
+
+---
+
+Key Combined Observations
+
+CPS escalation is consistently low in both scenarios (2–4%).
+
+Survival curves remain near 99% for long periods, indicating most children do not escalate to CPS after a GPS referral.
+
+Event timing differs:
+
+Scenario A shows later events due to more uniform 2-year follow-up.
+
+Scenario B shows earlier events among those who escalate, due to shorter observation windows.
+
+
+Both analyses confirm: GPS referrals rarely transition into CPS cases.
+
+
+
+---
+
+Recommendations for Policy & Practice
+
+Prioritize early-risk assessment: events cluster within the first 60 days.
+
+Provide targeted follow-up only for high-risk subgroups (e.g., sexualized behaviors, repeated GPS referrals).
+
+Continue population-level monitoring but focus resources on the small minority of GPS cases that escalate.
+
+Consider further stratification by referral subtype to identify specific risk drivers.
+
+
+
+---
+
+If you want, I can also:
+
+✔ Add visuals on the slides
+
+✔ Build a PowerPoint file with design & charts
+
+✔ Add stratified insights (e.g., sexually acting out vs not)
+
+✔ Add risk tables (1-year, 2-year cumulative CPS risk)
+
+Just tell me which version you prefer.
