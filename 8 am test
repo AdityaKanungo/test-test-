@@ -2,65 +2,67 @@ import pandas as pd
 from lifelines import KaplanMeierFitter
 import matplotlib.pyplot as plt
 
-# ---------------------------------------------------------
-# STEP 1: Prepare the dataset
-# ---------------------------------------------------------
+STUDY_START = pd.to_datetime("2023-10-01")
+STUDY_END   = pd.to_datetime("2025-09-30")
 
 df['referral_received_date'] = pd.to_datetime(df['referral_received_date'])
 
-# Ensure index referral is unique
-index_df = df[df['is_index'] == 'Y'].copy()
-
 results = []
 
-for pid, group in df.groupby('long_person_id'):
-    g = group.sort_values('referral_received_date')
-    
-    # Find index referral
-    idx = g[g['is_index'] == 'Y']
+for pid, g in df.groupby("long_person_id"):
+
+    g = g.sort_values("referral_received_date")
+
+    # ---- Find the index referral ----
+    idx = g[g["is_index"] == "Y"]
     if idx.empty:
         continue
 
-    index_date = idx.iloc[0]['referral_received_date']
+    index_date = idx.iloc[0]["referral_received_date"]
 
-    # Find FIRST CPS after index
-    cps = g[(g['referral_type'] == 'CPS') &
-            (g['referral_received_date'] > index_date)]
+    # ignore if index is BEFORE study start (rare)
+    if index_date < STUDY_START:
+        index_date = STUDY_START
+
+    # ---- Find first CPS referral after index ----
+    cps = g[
+        (g["referral_type"] == "CPS")
+        & (g["referral_received_date"] > index_date)
+    ]
 
     if cps.empty:
-        # --- Censored ---
-        # time = last known referral date minus index date
-        last_date = g['referral_received_date'].max()
-        time = (last_date - index_date).days
+        # ---- No CPS during window → censored ----
+        # censor at study end (not last GPS date!)
+        time = (STUDY_END - index_date).days
         event = 0
+
     else:
-        # --- Event occurred ---
-        first_cps = cps.iloc[0]['referral_received_date']
-        time = (first_cps - index_date).days
-        event = 1
+        first_cps = cps.iloc[0]["referral_received_date"]
+        # event must also fall inside the study window
+        if first_cps <= STUDY_END:
+            time = (first_cps - index_date).days
+            event = 1
+        else:
+            # CPS after study end → censored
+            time = (STUDY_END - index_date).days
+            event = 0
 
     results.append({
-        'long_person_id': pid,
-        'time': time,
-        'event': event
+        "long_person_id": pid,
+        "time": time,
+        "event": event
     })
 
 surv_df = pd.DataFrame(results)
 
-# ---------------------------------------------------------
-# STEP 2: Fit Kaplan-Meier Survival Curve
-# ---------------------------------------------------------
+# ---- Fit KM Model ----
 kmf = KaplanMeierFitter()
-kmf.fit(durations=surv_df['time'], event_observed=surv_df['event'])
+kmf.fit(surv_df["time"], surv_df["event"])
 
 kmf.plot()
-plt.title("Survival from Index GPS to First CPS Referral")
-plt.xlabel("Days since Index Referral")
-plt.ylabel("Survival Probability (No CPS yet)")
+plt.title("Survival: Index GPS → First CPS (Observation Window)")
+plt.xlabel("Days Since Index")
+plt.ylabel("Survival Probability")
 plt.show()
 
-# ---------------------------------------------------------
-# STEP 3: Summary Stats
-# ---------------------------------------------------------
-print("Median time to CPS:", kmf.median_survival_time_)
-print(kmf.survival_function_.head())
+print("Median Time to CPS:", kmf.median_survival_time_)
