@@ -1,212 +1,66 @@
-Here’s one concrete way to do it with your current columns. I’ll assume:
-
-Index event = row where referral_type == "GPS" and is_index == "Y".
-
-Event of interest = first CPS referral after the index within each long_person_id.
-
-Follow-up time is measured by days_since_index_referral (already in your file).
-
-Data is already limited to 1-year post-index (your file name suggests that).
-
-
-Below is end-to-end code using lifelines for Kaplan–Meier survival curves and a few visualizations.
-
 import pandas as pd
-import numpy as np
 from lifelines import KaplanMeierFitter
 import matplotlib.pyplot as plt
-import seaborn as sns
 
-# -----------------------------------------------------------
-# 1. Start from your longitudinal dataframe
-# -----------------------------------------------------------
-# df = pd.read_parquet('Phase 1/Data/Analysis_Longitudinal_Data_CSAO_1_year_index.parquet')
+# ---------------------------------------------------------
+# STEP 1: Prepare the dataset
+# ---------------------------------------------------------
 
-# Keep only the columns we actually need
-cols = [
-    'long_person_id',
-    'referral_id',
-    'referral_type',
-    'referral_sequence_type',
-    'is_index',
-    'days_since_index_referral',
-    'category_of_abuse',
-    'subcategory_of_abuse',
-    'referral_source',
-    'same_gps_subcategory_as_index'
-]
-df = df[cols].copy()
+df['referral_received_date'] = pd.to_datetime(df['referral_received_date'])
 
-# -----------------------------------------------------------
-# 2. Build a person-level survival dataset
-# -----------------------------------------------------------
+# Ensure index referral is unique
+index_df = df[df['is_index'] == 'Y'].copy()
 
-# 2a. Identify each person's index GPS referral
-index_mask = (df['referral_type'] == 'GPS') & (df['is_index'] == 'Y')
-index_df = (
-    df.loc[index_mask]
-      .sort_values(['long_person_id', 'days_since_index_referral'])
-      .drop_duplicates('long_person_id')
-)
+results = []
 
-# 2b. For each person, find the FIRST CPS referral AFTER index
-cps_mask = (df['referral_type'] == 'CPS') & (df['referral_sequence_type'] == 'subsequent')
-cps_df = (
-    df.loc[cps_mask]
-      .dropna(subset=['days_since_index_referral'])
-      .sort_values(['long_person_id', 'days_since_index_referral'])
-)
+for pid, group in df.groupby('long_person_id'):
+    g = group.sort_values('referral_received_date')
+    
+    # Find index referral
+    idx = g[g['is_index'] == 'Y']
+    if idx.empty:
+        continue
 
-first_cps = (
-    cps_df.groupby('long_person_id', as_index=False)
-          .first()[['long_person_id', 'days_since_index_referral']]
-          .rename(columns={'days_since_index_referral': 'time_to_first_cps'})
-)
+    index_date = idx.iloc[0]['referral_received_date']
 
-# 2c. Determine maximum follow-up time per person (for censoring)
-followup = (
-    df.groupby('long_person_id', as_index=False)
-      ['days_since_index_referral']
-      .max()
-      .rename(columns={'days_since_index_referral': 'followup_time'})
-)
+    # Find FIRST CPS after index
+    cps = g[(g['referral_type'] == 'CPS') &
+            (g['referral_received_date'] > index_date)]
 
-# 2d. Assemble survival frame
-surv = (
-    index_df[['long_person_id', 'category_of_abuse',
-              'subcategory_of_abuse', 'referral_source',
-              'same_gps_subcategory_as_index']]
-    .merge(first_cps, on='long_person_id', how='left')
-    .merge(followup, on='long_person_id', how='left')
-)
+    if cps.empty:
+        # --- Censored ---
+        # time = last known referral date minus index date
+        last_date = g['referral_received_date'].max()
+        time = (last_date - index_date).days
+        event = 0
+    else:
+        # --- Event occurred ---
+        first_cps = cps.iloc[0]['referral_received_date']
+        time = (first_cps - index_date).days
+        event = 1
 
-# if your data is strictly 1-year, you can cap follow-up at 365:
-surv['followup_time'] = surv['followup_time'].clip(upper=365)
+    results.append({
+        'long_person_id': pid,
+        'time': time,
+        'event': event
+    })
 
-# Event indicator: 1 if CPS occurred, 0 if censored
-surv['event_cps'] = np.where(surv['time_to_first_cps'].notna(), 1, 0)
+surv_df = pd.DataFrame(results)
 
-# Time variable: time to CPS if event, otherwise follow-up time
-surv['time'] = np.where(
-    surv['event_cps'] == 1,
-    surv['time_to_first_cps'],
-    surv['followup_time']
-)
-
-# Drop weird negatives if any
-surv = surv[surv['time'] >= 0].copy()
-
-print(surv[['time', 'event_cps']].describe())
-print("N people:", len(surv), "  N events:", surv['event_cps'].sum())
-
-
----
-
-3. Basic Kaplan–Meier survival curve
-
+# ---------------------------------------------------------
+# STEP 2: Fit Kaplan-Meier Survival Curve
+# ---------------------------------------------------------
 kmf = KaplanMeierFitter()
-
-plt.figure(figsize=(7, 5))
-kmf.fit(durations=surv['time'],
-        event_observed=surv['event_cps'],
-        label='Any CPS referral')
+kmf.fit(durations=surv_df['time'], event_observed=surv_df['event'])
 
 kmf.plot()
-plt.xlabel('Days since index GPS referral')
-plt.ylabel('Probability of NO CPS referral')
-plt.title('Survival curve: Time from index GPS to first CPS')
-plt.tight_layout()
+plt.title("Survival from Index GPS to First CPS Referral")
+plt.xlabel("Days since Index Referral")
+plt.ylabel("Survival Probability (No CPS yet)")
 plt.show()
 
-print("Median time to CPS (if exists):", kmf.median_survival_time_)
-
-This gives the overall probability of remaining CPS-free as time since index increases.
-
-
----
-
-4. Stratified survival curves (e.g., by category of abuse)
-
-plt.figure(figsize=(8, 6))
-kmf = KaplanMeierFitter()
-
-for cat, g in surv.groupby('category_of_abuse'):
-    if len(g) < 50:  # skip tiny groups if you want
-        continue
-    kmf.fit(g['time'], g['event_cps'], label=str(cat))
-    kmf.plot(ci_show=False)  # cleaner plots for many groups
-
-plt.xlabel('Days since index GPS referral')
-plt.ylabel('Probability of NO CPS referral')
-plt.title('Survival by category of abuse at index GPS')
-plt.legend(title='Category of abuse', bbox_to_anchor=(1.05, 1), loc='upper left')
-plt.tight_layout()
-plt.show()
-
-You can repeat the same pattern for:
-
-referral_source
-
-same_gps_subcategory_as_index (Y/N)
-
-subcategory_of_abuse
-
-
-
----
-
-5. Cumulative incidence and simple seaborn visuals
-
-Cumulative incidence (probability of ever having CPS) is just 1 − S(t):
-
-kmf = KaplanMeierFitter()
-kmf.fit(surv['time'], surv['event_cps'])
-
-surv_fn = kmf.survival_function_.reset_index()
-surv_fn.columns = ['time', 'survival']
-surv_fn['cum_incidence'] = 1 - surv_fn['survival']
-
-plt.figure(figsize=(7, 5))
-sns.lineplot(data=surv_fn, x='time', y='cum_incidence')
-plt.xlabel('Days since index GPS referral')
-plt.ylabel('Cumulative probability of CPS referral')
-plt.title('Cumulative incidence of CPS after index GPS')
-plt.tight_layout()
-plt.show()
-
-Distribution of event times among those who do get CPS:
-
-events_only = surv[surv['event_cps'] == 1]
-
-plt.figure(figsize=(7, 5))
-sns.histplot(events_only['time'], bins=30, kde=True)
-plt.xlabel('Days from index GPS to first CPS')
-plt.ylabel('Number of children')
-plt.title('Distribution of time to first CPS (events only)')
-plt.tight_layout()
-plt.show()
-
-Proportion with CPS vs no CPS
-
-plt.figure(figsize=(5, 4))
-sns.countplot(x='event_cps', data=surv)
-plt.xticks([0, 1], ['No CPS during follow-up', 'CPS occurred'])
-plt.title('Index GPS referrals: CPS event vs censored')
-plt.tight_layout()
-plt.show()
-
-
----
-
-6. Next steps (optional)
-
-Once you’re comfortable with this:
-
-Add covariates into a Cox proportional hazards model (lifelines.CoxPHFitter) to see which factors are associated with higher hazard of CPS after GPS.
-
-Repeat the KM curves limited to 180 days, 90 days, etc., if you want to focus on short-term risk.
-
-Export the survival estimates at specific time points (30, 90, 180, 365 days) for a simple table for leadership.
-
-
-If you paste a small sample of your data (just a few rows with the columns above), I can adapt the code exactly to your structure and help interpret the outputs.
+# ---------------------------------------------------------
+# STEP 3: Summary Stats
+# ---------------------------------------------------------
+print("Median time to CPS:", kmf.median_survival_time_)
+print(kmf.survival_function_.head())
