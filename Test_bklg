@@ -1,117 +1,66 @@
-Below are three polished, presentation-ready slides summarizing:
-
-Scenario A (1-Year Index Window)
-
-Scenario B (2-Year Index Window)
-
-Combined Comparison / Key Takeaways
-
-
-They are written in a clear client-friendly tone and structured so you can paste directly into PowerPoint or Google Slides.
+Here’s a clean, client-ready single slide you can drop into your deck.
 
 
 ---
 
-📊 Slide 1 — Scenario A: Index GPS Window = 1 Year
+Power Analysis – What Our Sample Size Can and Cannot Tell Us
 
-Survival Analysis: Index GPS → Subsequent CPS (1-Year Index Window)
+Why we did this
 
-Index Period: Oct 1, 2023 – Sept 30, 2024
-Follow-up: Up to Sept 30, 2025 (max 2 years)
-
-
----
-
-Key Findings
-
-CPS escalation is rare:
-3.72% (50 of 1,344 children) escalated to CPS within 2 years.
-
-Strong survival curve:
-~97.7% are CPS-free at 1 year,
-~96.5% remain CPS-free at 2 years.
-
-Median time to CPS among event cases only: 221.5 days
-(Does not represent the average child; only those who escalated.)
-
-Event timing pattern:
-Most CPS events occur early—within 0–60 days after the index GPS referral.
+To understand whether our current data has enough CPS events to reliably detect differences in CPS risk between subgroups (e.g., different GPS types, sexually acting out vs others) using survival analysis.
 
 
 
 ---
 
-Interpretation for Stakeholders
+Data reality
 
-When an index GPS occurs early in the window, children have a full 2 years of observation, increasing the likelihood of detecting CPS events.
+CPS events are rare in both scenarios:
 
-Nevertheless, escalation remains exceptionally low, suggesting the majority of GPS referrals do not transition into CPS involvement over the next two years.
+Scenario A (1-year index): 50 CPS events out of 1,344 children (3.7%)
 
-The early event concentration signals the need to focus early post-GPS interventions for the small group at highest risk.
-
-
-
----
-
-📊 Slide 2 — Scenario B: Index GPS Window = 2 Years
-
-Survival Analysis: Index GPS → Subsequent CPS (2-Year Index Window)
-
-Index Period: Oct 1, 2023 – Sept 30, 2025
-Follow-up: Until Sept 30, 2025 (variable follow-up times)
+Scenario B (2-year index): 70 CPS events out of 2,621 children (2.7%)
 
 
----
-
-Key Findings
-
-Even lower CPS escalation rate:
-2.67% (70 of 2,621 children).
-
-Survival curve remains extremely high:
-~98.3% CPS-free at 1 year,
-~97.3% CPS-free at 2 years.
-
-Median time to CPS among event cases: 96.5 days
-
-Reason for lower CPS risk:
-Many children enter later in the study period, resulting in shorter exposure time, and thus fewer opportunities to escalate.
+In survival analysis, statistical power is driven by the number of events, not just total sample size.
 
 
 
 ---
 
-Interpretation for Stakeholders
+What we can detect with current events (80% power, α = 5%)
 
-Adding Year 2 index referrals enlarges the cohort with children who have limited follow-up (e.g., index referrals in 2025).
+With ~70 events (Scenario B), we have good power to detect roughly a 2x increase in CPS hazard between two groups
 
-These later entrants naturally have less “time at risk,” producing lower observed CPS rates.
-
-Despite broader inclusion, escalation remains rare, reinforcing that the GPS → CPS pathway occurs in a very small subset of cases.
+Example: CPS risk ~3% vs ~6%
 
 
-
----
-
-📊 Slide 3 — Combined Insights & Recommendations
-
-Comparison of Scenarios A & B
-
-Metric	Scenario A (1-Year Index)	Scenario B (2-Year Index)
-
-Total Children	1,344	2,621
-CPS Events	50	70
-Event Rate	3.72%	2.67%
-Censor Rate	96.28%	97.33%
-Median Time to CPS (Events Only)	221.5 days	96.5 days
-CPS-Free at 2 Years	~96.5%	~97.3%
+With ~50 events (Scenario A), we need an even larger difference (~2.2x) to be confident it is real.
 
 
 
 ---
 
-Key Combined Observations
+What we are under-powered to detect
 
+We do not have enough CPS events to reliably detect moderate differences, such as:
+
+HR ≈ 1.5 (e.g., CPS risk 3% vs 4–5%)
+
+
+To detect these smaller but meaningful differences, we would need ~3× more CPS events
+
+Practically: more years of data and/or combining multiple regions or cohorts.
+
+
+
+
+---
+
+Key takeaway for leadership
+
+> Our current dataset is excellent for estimating overall CPS risk after a GPS referral and for flagging large risk differences between groups (when one group is about twice as likely to reach CPS).
+However, because CPS escalation is rare, we are not yet powered to confidently detect smaller increases in risk without additional data (more time or more jurisdictions).
 CPS escalation is consistently low in both scenarios (2–4%).
 
 Survival curves remain near 99% for long periods, indicating most children do not escalate to CPS after a GPS referral.
