@@ -2,289 +2,134 @@ import xml.etree.ElementTree as ET
 import pandas as pd
 
 
-def extract_informatica_mappings_single_df(xml_file):
-    tree = ET.parse(xml_file)
-    root = tree.getroot()
+class InformaticaXMLToDataFrame:
+    def __init__(self, xml_file):
+        self.tree = ET.parse(xml_file)
+        self.root = self.tree.getroot()
 
-    lineage = []
+        self.sources = {}
+        self.targets = {}
+        self.transformations = {}
+        self.instances = {}
+        self.mappings = []
 
-    # ------------------------------------------------------------------
-    # Build source fields and datatypes lookup
-    # ------------------------------------------------------------------
-    source_fields = {}
-    for src in root.findall(".//SOURCE"):
-        src_name = src.get("NAME")
-        source_fields[src_name] = {}
-        for sf in src.findall(".//SOURCEFIELD"):
-            field_name = sf.get("NAME")
-            data_type = sf.get("DATATYPE")
-            source_fields[src_name][field_name] = data_type
+    def parse(self):
+        self._parse_sources()
+        self._parse_targets()
+        self._parse_transformations()
+        return self._parse_mappings()
 
-    # ------------------------------------------------------------------
-    # Build target fields and datatypes lookup
-    # ------------------------------------------------------------------
-    target_fields = {}
-    for tgt in root.findall(".//TARGET"):
-        tgt_name = tgt.get("NAME")
-        target_fields[tgt_name] = {}
-        for tf in tgt.findall(".//TARGETFIELD"):
-            field_name = tf.get("NAME")
-            data_type = tf.get("DATATYPE")
-            target_fields[tgt_name][field_name] = data_type
+    # ----------------------------------------------------
+    # SOURCES
+    # ----------------------------------------------------
+    def _parse_sources(self):
+        for src in self.root.findall(".//SOURCE"):
+            src_name = src.attrib["NAME"]
+            self.sources[src_name] = {}
 
-    # ------------------------------------------------------------------
-    # Process mappings
-    # ------------------------------------------------------------------
-    for mapping in root.findall(".//MAPPING"):
-        mapping_name = mapping.get("NAME") if mapping is not None else ""
+            for fld in src.findall("SOURCEFIELD"):
+                self.sources[src_name][fld.attrib["NAME"]] = fld.attrib.get("DATATYPE")
 
-        # --------------------------------------------------------------
-        # Map source instance name to actual source object
-        # --------------------------------------------------------------
-        instance_to_source_object = {}
-        for inst in mapping.findall(".//INSTANCE"):
-            if inst.get("TYPE") == "SOURCE":
-                inst_name = inst.get("NAME")
-                src_obj_name = inst.get("TRANSFORMATION_NAME")
-                if src_obj_name:
-                    instance_to_source_object[inst_name] = src_obj_name
+    # ----------------------------------------------------
+    # TARGETS
+    # ----------------------------------------------------
+    def _parse_targets(self):
+        for tgt in self.root.findall(".//TARGET"):
+            tgt_name = tgt.attrib["NAME"]
+            self.targets[tgt_name] = {}
 
-        # --------------------------------------------------------------
-        # Transformations
-        # --------------------------------------------------------------
-        transformations = {
-            tr.get("NAME"): tr
-            for tr in mapping.findall(".//TRANSFORMATION")
-        }
+            for fld in tgt.findall("TARGETFIELD"):
+                self.targets[tgt_name][fld.attrib["NAME"]] = fld.attrib.get("DATATYPE")
 
-        transformation_types = {}
-        transform_fields_dict = {}
-        table_attributes_dict = {}
-        table_loading_logic_map = {}
+    # ----------------------------------------------------
+    # TRANSFORMATIONS
+    # ----------------------------------------------------
+    def _parse_transformations(self):
+        for tr in self.root.findall(".//TRANSFORMATION"):
+            tr_name = tr.attrib["NAME"]
+            tr_type = tr.attrib["TYPE"]
 
-        # 🔹 NEW: Lookup-specific structures
-        lookup_table_map = {}
-        lookup_condition_map = {}
-        lookup_ports_map = {}
-        lookup_porttype_map = {}
+            ports = {}
+            for port in tr.findall("TRANSFORMFIELD"):
+                ports[port.attrib["NAME"]] = {
+                    "datatype": port.attrib.get("DATATYPE"),
+                    "expression": port.attrib.get("EXPRESSION")
+                }
 
-        # --------------------------------------------------------------
-        # Helper for table attributes
-        # --------------------------------------------------------------
-        def _find_table_attr_value(tr_elem, contains_text):
-            contains_text = contains_text.lower()
-            for a in tr_elem.findall(".//TABLEATTRIBUTE"):
-                n = (a.get("NAME") or "").lower()
-                v = a.get("VALUE") or ""
-                if contains_text in n:
-                    return v
-            return ""
-
-        # --------------------------------------------------------------
-        # Parse transformations
-        # --------------------------------------------------------------
-        for tr_name, tr in transformations.items():
-            tr_type = tr.get("TYPE")
-            transformation_types[tr_name] = tr_type
-
-            # Table attributes
-            table_attr_dict = {
-                attr.get("NAME"): attr.get("VALUE")
-                for attr in tr.findall(".//TABLEATTRIBUTE")
+            self.transformations[tr_name] = {
+                "type": tr_type,
+                "ports": ports
             }
-            table_attr_logic = "; ".join(
-                f"{k}: {v}"
-                for k, v in table_attr_dict.items()
-                if k != "Sql Query" and v
-            )
-            table_attributes_dict[tr_name] = table_attr_logic
 
-            # Source Qualifier SQL
-            if tr_type == "Source Qualifier":
-                for attr in tr.findall(".//TABLEATTRIBUTE"):
-                    if attr.get("NAME") == "Sql Query":
-                        table_loading_logic_map[tr_name] = attr.get("VALUE")
+    # ----------------------------------------------------
+    # MAPPINGS → DATAFRAME
+    # ----------------------------------------------------
+    def _parse_mappings(self):
+        rows = []
 
-            # Transform fields
-            transform_fields_dict[tr_name] = []
-            for tf in tr.findall(".//TRANSFORMFIELD"):
-                transform_fields_dict[tr_name].append({
-                    "Transform Field": tf.get("NAME"),
-                    "Transform Field Data Type": tf.get("DATATYPE"),
-                    "Transformation Logic": tf.get("EXPRESSION") or ""
-                })
+        for mapping in self.root.findall(".//MAPPING"):
+            mapping_name = mapping.attrib["NAME"]
 
-            # ----------------------------------------------------------
-            # 🔹 NEW: Lookup handling
-            # ----------------------------------------------------------
-            if (tr_type or "").lower() in {"lookup", "lookup procedure"}:
-                lookup_table = (
-                    _find_table_attr_value(tr, "lookup table")
-                    or _find_table_attr_value(tr, "lookup source")
-                    or _find_table_attr_value(tr, "lookup object")
-                )
-                lookup_condition = (
-                    _find_table_attr_value(tr, "lookup condition")
-                    or _find_table_attr_value(tr, "sql override")
-                )
+            instances = {}
+            for inst in mapping.findall("INSTANCE"):
+                instances[inst.attrib["NAME"]] = {
+                    "type": inst.attrib["TYPE"],
+                    "ref": inst.attrib.get("TRANSFORMATION_NAME")
+                }
 
-                if lookup_table:
-                    lookup_table_map[tr_name] = lookup_table
-                if lookup_condition:
-                    lookup_condition_map[tr_name] = lookup_condition
+            for conn in mapping.findall("CONNECTOR"):
+                from_inst = conn.attrib["FROMINSTANCE"]
+                from_field = conn.attrib["FROMFIELD"]
+                to_inst = conn.attrib["TOINSTANCE"]
+                to_field = conn.attrib["TOFIELD"]
 
-                lookup_ports_map[tr_name] = {}
-                lookup_porttype_map[tr_name] = {}
+                from_obj = instances.get(from_inst, {})
+                to_obj = instances.get(to_inst, {})
 
-                for tf in tr.findall(".//TRANSFORMFIELD"):
-                    pname = tf.get("NAME")
-                    ptype = (tf.get("PORTTYPE") or "").upper()
-                    pdt = tf.get("DATATYPE")
-                    lookup_porttype_map[tr_name][pname] = ptype
-                    if ptype == "LOOKUP":
-                        lookup_ports_map[tr_name][pname] = pdt
+                row = {
+                    "Mapping Name": mapping_name,
 
-        # --------------------------------------------------------------
-        # Connectors
-        # --------------------------------------------------------------
-        connectors = mapping.findall(".//CONNECTOR")
-        connector_map = {}
-        for conn in connectors:
-            connector_map[
-                (conn.get("TOINSTANCE"), conn.get("TOFIELD"))
-            ] = (conn.get("FROMINSTANCE"), conn.get("FROMFIELD"))
+                    "Target Table Name": to_obj.get("ref"),
+                    "Target Column Name": to_field,
+                    "Target Data Type": self.targets.get(
+                        to_obj.get("ref"), {}
+                    ).get(to_field),
 
-        # --------------------------------------------------------------
-        # Recursive source datatype resolution
-        # --------------------------------------------------------------
-        def get_source_datatype(inst, field):
-            if inst in instance_to_source_object:
-                src_obj = instance_to_source_object[inst]
-                return (
-                    src_obj,
-                    field,
-                    source_fields.get(src_obj, {}).get(field, "")
-                )
-            prev = connector_map.get((inst, field))
-            if prev:
-                return get_source_datatype(prev[0], prev[1])
-            return "", "", ""
+                    "Source Table Name": from_obj.get("ref"),
+                    "Source Column Name": from_field,
+                    "Source Data Type": self.sources.get(
+                        from_obj.get("ref"), {}
+                    ).get(from_field),
 
-        # --------------------------------------------------------------
-        # Resolve lookup source
-        # --------------------------------------------------------------
-        def resolve_lookup(trans_name, field_name, logic):
-            table = lookup_table_map.get(trans_name)
-            if not table:
-                return None
-            ports = lookup_ports_map.get(trans_name, {})
-            if field_name in ports:
-                return (
-                    table,
-                    field_name,
-                    ports[field_name],
-                    lookup_condition_map.get(trans_name, "")
-                )
-            for lp in ports:
-                if lp in (logic or ""):
-                    return (
-                        table,
-                        lp,
-                        ports[lp],
-                        lookup_condition_map.get(trans_name, "")
-                    )
-            return None
+                    "Transformation Name": to_obj.get("ref"),
+                    "Transformation Type": self.transformations.get(
+                        to_obj.get("ref"), {}
+                    ).get("type"),
 
-        # --------------------------------------------------------------
-        # Trace lineage
-        # --------------------------------------------------------------
-        def trace_lineage(curr_inst, curr_field, path):
-            if (curr_inst, curr_field) in path:
-                return []
+                    "Transform Field": to_field,
+                    "Transform Field Data Type": self.transformations.get(
+                        to_obj.get("ref"), {}
+                    ).get("ports", {}).get(to_field, {}).get("datatype"),
 
-            tr_name = curr_inst
-            tr_type = transformation_types.get(tr_name, "")
+                    "Transformation Logic": self.transformations.get(
+                        to_obj.get("ref"), {}
+                    ).get("ports", {}).get(to_field, {}).get("expression"),
 
-            tf_logic = ""
-            tf_field = curr_field
-            tf_data_type = ""
+                    "Table Loading Logic": "Direct Load"
+                }
 
-            for tf in transform_fields_dict.get(tr_name, []):
-                if tf["Transform Field"] == curr_field:
-                    tf_logic = tf["Transformation Logic"]
-                    tf_data_type = tf["Transform Field Data Type"]
-                    break
+                rows.append(row)
 
-            if not tf_logic:
-                tf_logic = table_attributes_dict.get(tr_name, "")
+        return pd.DataFrame(rows)
 
-            table_loading_logic = ""
-            if tr_type == "Source Qualifier":
-                table_loading_logic = table_loading_logic_map.get(tr_name, "")
 
-            # 🔹 Lookup override
-            lookup_res = None
-            if (tr_type or "").lower() in {"lookup", "lookup procedure"}:
-                lookup_res = resolve_lookup(tr_name, curr_field, tf_logic)
+# ----------------------------------------------------
+# MAIN
+# ----------------------------------------------------
+if __name__ == "__main__":
+    xml_file = "mapping.xml"
 
-            if lookup_res:
-                src_table, src_col, src_dt, lkp_cond = lookup_res
-                if lkp_cond:
-                    tf_logic = f"{tf_logic}; Lookup Condition: {lkp_cond}" if tf_logic else lkp_cond
-            else:
-                src_table, src_col, src_dt = get_source_datatype(curr_inst, curr_field)
+    parser = InformaticaXMLToDataFrame(xml_file)
+    df = parser.parse()
 
-            return [{
-                "Mapping Name": mapping_name,
-                "Target Table Name": "",
-                "Target Column Name": "",
-                "Target Data Type": "",
-                "Source Table Name": src_table,
-                "Source Column Name": src_col,
-                "Source Data Type": src_dt,
-                "Transformation Name": tr_name,
-                "Transformation Type": tr_type,
-                "Transform Field": tf_field,
-                "Transform Field Data Type": tf_data_type,
-                "Transformation Logic": tf_logic,
-                "Table Loading Logic": table_loading_logic
-            }]
-
-        # --------------------------------------------------------------
-        # Targets
-        # --------------------------------------------------------------
-        for inst in mapping.findall(".//INSTANCE"):
-            if inst.get("TYPE") == "TARGET":
-                tgt_name = inst.get("NAME")
-                tgt_obj = target_fields.get(tgt_name, {})
-
-                for tgt_field, tgt_dt in tgt_obj.items():
-                    prev = connector_map.get((tgt_name, tgt_field))
-                    if prev:
-                        hops = trace_lineage(prev[0], prev[1], [])
-                        if hops:
-                            hop = hops[0]
-                            hop.update({
-                                "Target Table Name": tgt_name,
-                                "Target Column Name": tgt_field,
-                                "Target Data Type": tgt_dt
-                            })
-                            lineage.append(hop)
-                    else:
-                        lineage.append({
-                            "Mapping Name": mapping_name,
-                            "Target Table Name": tgt_name,
-                            "Target Column Name": tgt_field,
-                            "Target Data Type": tgt_dt,
-                            "Source Table Name": "",
-                            "Source Column Name": "",
-                            "Source Data Type": "",
-                            "Transformation Name": "",
-                            "Transformation Type": "",
-                            "Transform Field": "",
-                            "Transform Field Data Type": "",
-                            "Transformation Logic": "",
-                            "Table Loading Logic": ""
-                        })
-
-    return pd.DataFrame(lineage)
+    print(df)
