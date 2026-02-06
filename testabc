@@ -1,1 +1,295 @@
+import xml.etree.ElementTree as ET
+import pandas as pd
+
+
+# ============================================================
+# Utility helpers
+# ============================================================
+
+def safe_get(elem, attr, default=""):
+    if elem is None:
+        return default
+    v = elem.get(attr)
+    return v if v is not None else default
+
+
+# ============================================================
+# Main extractor
+# ============================================================
+
+class InformaticaLineageExtractor:
+
+    def __init__(self, xml_file):
+        self.tree = ET.parse(xml_file)
+        self.root = self.tree.getroot()
+
+        self.source_fields = {}
+        self.target_fields = {}
+        self.mapplets = {}
+
+        self._load_sources()
+        self._load_targets()
+        self._load_mapplets()
+
+    # --------------------------------------------------------
+    # Load global metadata
+    # --------------------------------------------------------
+
+    def _load_sources(self):
+        for src in self.root.findall(".//SOURCE"):
+            name = safe_get(src, "NAME")
+            self.source_fields[name] = {}
+            for sf in src.findall(".//SOURCEFIELD"):
+                self.source_fields[name][safe_get(sf, "NAME")] = safe_get(sf, "DATATYPE")
+
+    def _load_targets(self):
+        for tgt in self.root.findall(".//TARGET"):
+            name = safe_get(tgt, "NAME")
+            self.target_fields[name] = {}
+            for tf in tgt.findall(".//TARGETFIELD"):
+                self.target_fields[name][safe_get(tf, "NAME")] = safe_get(tf, "DATATYPE")
+
+    def _load_mapplets(self):
+        for mp in self.root.findall(".//MAPPLET"):
+            self.mapplets[safe_get(mp, "NAME")] = mp
+
+    # --------------------------------------------------------
+    # Parse mapping container (MAPPING or MAPPLET)
+    # --------------------------------------------------------
+
+    def parse_instances(self, container):
+        out = {}
+        for inst in container.findall(".//INSTANCE"):
+            out[safe_get(inst, "NAME")] = {
+                "type": safe_get(inst, "TYPE"),
+                "transformation": safe_get(inst, "TRANSFORMATION_NAME")
+            }
+        return out
+
+    def parse_transformations(self, container):
+        out = {}
+        for tr in container.findall(".//TRANSFORMATION"):
+            tr_name = safe_get(tr, "NAME")
+            tr_type = safe_get(tr, "TYPE")
+
+            fields = {}
+            for tf in tr.findall(".//TRANSFORMFIELD"):
+                fields[safe_get(tf, "NAME")] = {
+                    "datatype": safe_get(tf, "DATATYPE"),
+                    "expression": safe_get(tf, "EXPRESSION"),
+                    "porttype": safe_get(tf, "PORTTYPE")
+                }
+
+            attrs = {}
+            for ta in tr.findall(".//TABLEATTRIBUTE"):
+                attrs[safe_get(ta, "NAME")] = safe_get(ta, "VALUE")
+
+            out[tr_name] = {
+                "type": tr_type,
+                "fields": fields,
+                "attrs": attrs
+            }
+        return out
+
+    def parse_connectors(self, container):
+        out = {}
+        for c in container.findall(".//CONNECTOR"):
+            out[(safe_get(c, "TOINSTANCE"), safe_get(c, "TOFIELD"))] = (
+                safe_get(c, "FROMINSTANCE"),
+                safe_get(c, "FROMFIELD")
+            )
+        return out
+
+    # --------------------------------------------------------
+    # Recursive lineage tracing
+    # --------------------------------------------------------
+
+    def trace_source(
+        self,
+        inst,
+        field,
+        instances,
+        transforms,
+        connectors,
+        visited
+    ):
+        if (inst, field) in visited:
+            return []
+
+        visited.add((inst, field))
+
+        info = instances.get(inst)
+        if not info:
+            return []
+
+        inst_type = info["type"]
+        tr_name = info["transformation"]
+
+        # SOURCE
+        if inst_type == "SOURCE":
+            dtype = self.source_fields.get(tr_name, {}).get(field, "")
+            return [{
+                "Source Table Name": tr_name,
+                "Source Column Name": field,
+                "Source Data Type": dtype
+            }]
+
+        # LOOKUP
+        if inst_type == "TRANSFORMATION":
+            tr = transforms.get(tr_name, {})
+            if tr.get("type", "").lower().startswith("lookup"):
+                lookup_table = (
+                    tr["attrs"].get("Lookup table name")
+                    or tr["attrs"].get("Lookup Sql Override")
+                    or ""
+                )
+                dtype = tr["fields"].get(field, {}).get("datatype", "")
+                return [{
+                    "Source Table Name": lookup_table,
+                    "Source Column Name": field,
+                    "Source Data Type": dtype
+                }]
+
+        # MAPPLET
+        if inst_type == "MAPPLET":
+            mp = self.mapplets.get(tr_name)
+            if mp is None:
+                return []
+
+            mp_instances = self.parse_instances(mp)
+            mp_transforms = self.parse_transformations(mp)
+            mp_connectors = self.parse_connectors(mp)
+
+            # Find OUTPUT transformation
+            for i, info2 in mp_instances.items():
+                if info2["type"] == "TRANSFORMATION":
+                    tr2 = mp_transforms.get(info2["transformation"], {})
+                    if tr2.get("type") == "Output Transformation":
+                        if field in tr2["fields"]:
+                            return self.trace_source(
+                                i, field,
+                                mp_instances,
+                                mp_transforms,
+                                mp_connectors,
+                                visited
+                            )
+            return []
+
+        # FOLLOW CONNECTOR
+        prev = connectors.get((inst, field))
+        if prev:
+            return self.trace_source(
+                prev[0],
+                prev[1],
+                instances,
+                transforms,
+                connectors,
+                visited
+            )
+
+        return []
+
+    # --------------------------------------------------------
+    # Extract lineage dataframe
+    # --------------------------------------------------------
+
+    def extract(self):
+        rows = []
+
+        for mapping in self.root.findall(".//MAPPING"):
+            mapping_name = safe_get(mapping, "NAME")
+
+            instances = self.parse_instances(mapping)
+            transforms = self.parse_transformations(mapping)
+            connectors = self.parse_connectors(mapping)
+
+            for inst_name, inst in instances.items():
+                if inst["type"] != "TARGET":
+                    continue
+
+                tgt_table = inst["transformation"]
+                tgt_fields = self.target_fields.get(tgt_table, {})
+
+                for tgt_field, tgt_dtype in tgt_fields.items():
+                    prev = connectors.get((inst_name, tgt_field))
+
+                    if not prev:
+                        rows.append({
+                            "Mapping Name": mapping_name,
+                            "Target Table Name": tgt_table,
+                            "Target Column Name": tgt_field,
+                            "Target Data Type": tgt_dtype,
+                            "Source Table Name": "",
+                            "Source Column Name": "",
+                            "Source Data Type": "",
+                            "Transformation Name": "",
+                            "Transformation Type": "",
+                            "Transformation Logic": ""
+                        })
+                        continue
+
+                    prev_inst, prev_field = prev
+                    tr_info = instances.get(prev_inst, {})
+                    tr_name = tr_info.get("transformation", "")
+                    tr_type = transforms.get(tr_name, {}).get("type", "")
+
+                    tf = transforms.get(tr_name, {}).get("fields", {}).get(prev_field, {})
+                    logic = tf.get("expression", "")
+                    if not logic:
+                        logic = "; ".join(
+                            f"{k}:{v}"
+                            for k, v in transforms.get(tr_name, {}).get("attrs", {}).items()
+                            if v
+                        )
+
+                    sources = self.trace_source(
+                        prev_inst,
+                        prev_field,
+                        instances,
+                        transforms,
+                        connectors,
+                        set()
+                    )
+
+                    if not sources:
+                        sources = [{
+                            "Source Table Name": "",
+                            "Source Column Name": "",
+                            "Source Data Type": ""
+                        }]
+
+                    for s in sources:
+                        rows.append({
+                            "Mapping Name": mapping_name,
+                            "Target Table Name": tgt_table,
+                            "Target Column Name": tgt_field,
+                            "Target Data Type": tgt_dtype,
+                            "Source Table Name": s["Source Table Name"],
+                            "Source Column Name": s["Source Column Name"],
+                            "Source Data Type": s["Source Data Type"],
+                            "Transformation Name": tr_name,
+                            "Transformation Type": tr_type,
+                            "Transformation Logic": logic
+                        })
+
+        return pd.DataFrame(rows)
+
+
+# ============================================================
+# Public API
+# ============================================================
+
+def extract_informatica_mappings_single_df(xml_file):
+    extractor = InformaticaLineageExtractor(xml_file)
+    return extractor.extract()
+
+
+# ============================================================
+# Example
+# ============================================================
+
+if __name__ == "__main__":
+    df = extract_informatica_mappings_single_df("mapping.xml")
+    df.to_excel("informatica_lineage.xlsx", index=False)
+    print(df.head())
 
