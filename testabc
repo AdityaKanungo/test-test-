@@ -3,7 +3,7 @@ import pandas as pd
 from collections import defaultdict
 
 
-class InformaticaActiveLineageWithSQL:
+class InformaticaSimpleMapping:
     def __init__(self, xml_file):
         self.tree = ET.parse(xml_file)
         self.root = self.tree.getroot()
@@ -14,130 +14,142 @@ class InformaticaActiveLineageWithSQL:
         self.instances = {}
         self.connectors = []
 
+    # ----------------------------------------------------
+    # MAIN ENTRY
+    # ----------------------------------------------------
     def parse(self):
         self._parse_sources()
         self._parse_targets()
         self._parse_transformations()
         self._parse_instances_and_connectors()
-        return self._build_active_lineage_df()
+        return self._build_dataframe()
 
-    # -------------------------------------------------
+    # ----------------------------------------------------
     # SOURCES
-    # -------------------------------------------------
+    # ----------------------------------------------------
     def _parse_sources(self):
         for src in self.root.findall(".//SOURCE"):
-            self.sources[src.attrib["NAME"]] = {
-                f.attrib["NAME"]: f.attrib.get("DATATYPE")
+            self.sources[src.attrib.get("NAME")] = {
+                f.attrib.get("NAME"): f.attrib.get("DATATYPE")
                 for f in src.findall("SOURCEFIELD")
             }
 
-    # -------------------------------------------------
+    # ----------------------------------------------------
     # TARGETS
-    # -------------------------------------------------
+    # ----------------------------------------------------
     def _parse_targets(self):
         for tgt in self.root.findall(".//TARGET"):
-            self.targets[tgt.attrib["NAME"]] = {
-                f.attrib["NAME"]: f.attrib.get("DATATYPE")
+            self.targets[tgt.attrib.get("NAME")] = {
+                f.attrib.get("NAME"): f.attrib.get("DATATYPE")
                 for f in tgt.findall("TARGETFIELD")
             }
 
-    # -------------------------------------------------
-    # TRANSFORMATIONS (INCLUDING SQL)
-    # -------------------------------------------------
+    # ----------------------------------------------------
+    # TRANSFORMATIONS (LOGIC + SQL)
+    # ----------------------------------------------------
     def _parse_transformations(self):
         for tr in self.root.findall(".//TRANSFORMATION"):
-            tr_name = tr.attrib["NAME"]
-            tr_type = tr.attrib["TYPE"]
+            tr_name = tr.attrib.get("NAME")
+            tr_type = tr.attrib.get("TYPE")
 
             ports = {}
-            sql_logic = []
+            sql_parts = []
 
-            # Capture port expressions
             for port in tr.findall("TRANSFORMFIELD"):
-                ports[port.attrib["NAME"]] = {
+                ports[port.attrib.get("NAME")] = {
                     "datatype": port.attrib.get("DATATYPE"),
-                    "expression": port.attrib.get("EXPRESSION"),
-                    "porttype": port.attrib.get("PORTTYPE")
+                    "expression": port.attrib.get("EXPRESSION")
                 }
 
-            # Capture SQL from TABLEATTRIBUTE
             for attr in tr.findall("TABLEATTRIBUTE"):
-                attr_name = attr.attrib.get("NAME", "").lower()
-                if "sql" in attr_name or "query" in attr_name or "override" in attr_name:
-                    sql_logic.append(attr.attrib.get("VALUE"))
+                name = (attr.attrib.get("NAME") or "").lower()
+                if any(k in name for k in ["sql", "query", "override", "filter"]):
+                    sql_parts.append(attr.attrib.get("VALUE"))
 
             self.transformations[tr_name] = {
                 "type": tr_type,
                 "ports": ports,
-                "sql": "\n".join(filter(None, sql_logic))
+                "sql": "\n".join(filter(None, sql_parts))
             }
 
-    # -------------------------------------------------
+    # ----------------------------------------------------
     # INSTANCES + CONNECTORS
-    # -------------------------------------------------
+    # ----------------------------------------------------
     def _parse_instances_and_connectors(self):
         for mapping in self.root.findall(".//MAPPING"):
             for inst in mapping.findall("INSTANCE"):
-                self.instances[inst.attrib["NAME"]] = {
-                    "type": inst.attrib["TYPE"],
+                self.instances[inst.attrib.get("NAME")] = {
+                    "type": inst.attrib.get("TYPE"),
                     "ref": inst.attrib.get("TRANSFORMATION_NAME")
                 }
 
             for conn in mapping.findall("CONNECTOR"):
-                self.connectors.append((
-                    conn.attrib["FROMINSTANCE"],
-                    conn.attrib["FROMFIELD"],
-                    conn.attrib["TOINSTANCE"],
-                    conn.attrib["TOFIELD"]
-                ))
+                self.connectors.append({
+                    "from_inst": conn.attrib.get("FROMINSTANCE"),
+                    "from_field": conn.attrib.get("FROMFIELD"),
+                    "to_inst": conn.attrib.get("TOINSTANCE"),
+                    "to_field": conn.attrib.get("TOFIELD")
+                })
 
-    # -------------------------------------------------
-    # TRACE BACKWARD WITH LOGIC CAPTURE
-    # -------------------------------------------------
-    def _trace_source(self, instance, field, logic_stack):
-        for frm_i, frm_f, to_i, to_f in self.connectors:
-            if to_i == instance and to_f == field:
-                inst = self.instances.get(frm_i, {})
-                ref = inst.get("ref")
-
-                if inst.get("type") == "SOURCE":
-                    return ref, frm_f
-
-                # Capture transformation logic
-                tr = self.transformations.get(ref, {})
-                port = tr.get("ports", {}).get(frm_f, {})
-                if port.get("expression"):
-                    logic_stack.append(port["expression"])
-                if tr.get("sql"):
-                    logic_stack.append(tr["sql"])
-
-                return self._trace_source(frm_i, frm_f, logic_stack)
-
+    # ----------------------------------------------------
+    # FIND IMMEDIATE UPSTREAM
+    # ----------------------------------------------------
+    def _find_upstream(self, target_inst, target_field):
+        for c in self.connectors:
+            if c["to_inst"] == target_inst and c["to_field"] == target_field:
+                return c["from_inst"], c["from_field"]
         return None, None
 
-    # -------------------------------------------------
-    # FINAL DATAFRAME
-    # -------------------------------------------------
-    def _build_active_lineage_df(self):
+    # ----------------------------------------------------
+    # BUILD DATAFRAME
+    # ----------------------------------------------------
+    def _build_dataframe(self):
         rows = []
 
         for mapping in self.root.findall(".//MAPPING"):
-            mapping_name = mapping.attrib["NAME"]
+            mapping_name = mapping.attrib.get("NAME")
 
             for inst in mapping.findall("INSTANCE"):
-                if inst.attrib["TYPE"] != "TARGET":
+                if inst.attrib.get("TYPE") != "TARGET":
                     continue
 
-                tgt_table = inst.attrib["TRANSFORMATION_NAME"]
+                tgt_inst_name = inst.attrib.get("NAME")
+                tgt_table = inst.attrib.get("TRANSFORMATION_NAME")
 
                 for tgt_col, tgt_dtype in self.targets.get(tgt_table, {}).items():
-                    logic_stack = []
-                    src_table, src_col = self._trace_source(
-                        inst.attrib["NAME"], tgt_col, logic_stack
+                    src_inst, src_field = self._find_upstream(
+                        tgt_inst_name, tgt_col
                     )
 
-                    if not src_table:
+                    if not src_inst:
                         continue
+
+                    src_inst_info = self.instances.get(src_inst, {})
+                    src_ref = src_inst_info.get("ref")
+                    src_type = src_inst_info.get("type")
+
+                    transformation_logic = ""
+                    transformation_type = ""
+
+                    if src_type == "SOURCE":
+                        src_table = src_ref
+                        src_col = src_field
+                        src_dtype = self.sources.get(src_table, {}).get(src_col)
+
+                    else:
+                        tr = self.transformations.get(src_ref, {})
+                        src_table = src_ref
+                        src_col = src_field
+                        src_dtype = tr.get("ports", {}).get(src_field, {}).get("datatype")
+
+                        transformation_logic = (
+                            tr.get("ports", {})
+                            .get(src_field, {})
+                            .get("expression")
+                            or tr.get("sql")
+                        )
+
+                        transformation_type = tr.get("type")
 
                     rows.append({
                         "Mapping Name": mapping_name,
@@ -146,13 +158,13 @@ class InformaticaActiveLineageWithSQL:
                         "Target Data Type": tgt_dtype,
                         "Source Table Name": src_table,
                         "Source Column Name": src_col,
-                        "Source Data Type": self.sources[src_table].get(src_col),
-                        "Transformation Name": " → ".join(set(logic_stack)) or "Direct",
-                        "Transformation Type": "SQL / Expression",
-                        "Transform Field": tgt_col,
-                        "Transform Field Data Type": tgt_dtype,
-                        "Transformation Logic": "\n---\n".join(logic_stack),
-                        "Table Loading Logic": "Active Load"
+                        "Source Data Type": src_dtype,
+                        "Transformation Name": src_ref,
+                        "Transformation Type": transformation_type,
+                        "Transform Field": src_field,
+                        "Transform Field Data Type": src_dtype,
+                        "Transformation Logic": transformation_logic,
+                        "Table Loading Logic": "Simple Load"
                     })
 
         return pd.DataFrame(rows)
