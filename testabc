@@ -2,249 +2,289 @@ import xml.etree.ElementTree as ET
 import pandas as pd
 
 
-# ============================================================
-# Utility
-# ============================================================
-
-def safe_get(elem, attr, default=""):
-    if elem is None:
-        return default
-    return elem.get(attr) or default
-
-
-# ============================================================
-# MAIN FUNCTION (structure preserved)
-# ============================================================
-
 def extract_informatica_mappings_single_df(xml_file):
-
     tree = ET.parse(xml_file)
     root = tree.getroot()
 
-    lineage_rows = []
+    lineage = []
 
-    # --------------------------------------------------------
-    # SOURCE FIELDS
-    # --------------------------------------------------------
+    # ------------------------------------------------------------------
+    # Build source fields and datatypes lookup
+    # ------------------------------------------------------------------
     source_fields = {}
     for src in root.findall(".//SOURCE"):
-        src_name = safe_get(src, "NAME")
+        src_name = src.get("NAME")
         source_fields[src_name] = {}
         for sf in src.findall(".//SOURCEFIELD"):
-            source_fields[src_name][safe_get(sf, "NAME")] = safe_get(sf, "DATATYPE")
+            field_name = sf.get("NAME")
+            data_type = sf.get("DATATYPE")
+            source_fields[src_name][field_name] = data_type
 
-    # --------------------------------------------------------
-    # TARGET FIELDS
-    # --------------------------------------------------------
+    # ------------------------------------------------------------------
+    # Build target fields and datatypes lookup
+    # ------------------------------------------------------------------
     target_fields = {}
     for tgt in root.findall(".//TARGET"):
-        tgt_name = safe_get(tgt, "NAME")
+        tgt_name = tgt.get("NAME")
         target_fields[tgt_name] = {}
         for tf in tgt.findall(".//TARGETFIELD"):
-            target_fields[tgt_name][safe_get(tf, "NAME")] = safe_get(tf, "DATATYPE")
+            field_name = tf.get("NAME")
+            data_type = tf.get("DATATYPE")
+            target_fields[tgt_name][field_name] = data_type
 
-    # --------------------------------------------------------
-    # MAPPLETS (for minimal support)
-    # --------------------------------------------------------
-    mapplets = {safe_get(mp, "NAME"): mp for mp in root.findall(".//MAPPLET")}
-
-    # --------------------------------------------------------
-    # PROCESS EACH MAPPING
-    # --------------------------------------------------------
+    # ------------------------------------------------------------------
+    # Process mappings
+    # ------------------------------------------------------------------
     for mapping in root.findall(".//MAPPING"):
-        mapping_name = safe_get(mapping, "NAME")
+        mapping_name = mapping.get("NAME") if mapping is not None else ""
 
-        # ------------------------------
-        # INSTANCES
-        # ------------------------------
-        instances = {}
+        # --------------------------------------------------------------
+        # Map source instance name to actual source object
+        # --------------------------------------------------------------
+        instance_to_source_object = {}
         for inst in mapping.findall(".//INSTANCE"):
-            instances[safe_get(inst, "NAME")] = {
-                "TYPE": safe_get(inst, "TYPE"),
-                "TRANSFORMATION_NAME": safe_get(inst, "TRANSFORMATION_NAME")
-            }
+            if inst.get("TYPE") == "SOURCE":
+                inst_name = inst.get("NAME")
+                src_obj_name = inst.get("TRANSFORMATION_NAME")
+                if src_obj_name:
+                    instance_to_source_object[inst_name] = src_obj_name
 
-        # ------------------------------
-        # TRANSFORMATIONS
-        # ------------------------------
+        # --------------------------------------------------------------
+        # Transformations
+        # --------------------------------------------------------------
+        transformations = {
+            tr.get("NAME"): tr
+            for tr in mapping.findall(".//TRANSFORMATION")
+        }
+
         transformation_types = {}
-        transform_fields = {}
+        transform_fields_dict = {}
         table_attributes_dict = {}
-        table_loading_logic = {}
+        table_loading_logic_map = {}
 
-        for tr in mapping.findall(".//TRANSFORMATION"):
-            tr_name = safe_get(tr, "NAME")
-            tr_type = safe_get(tr, "TYPE")
+        # 🔹 NEW: Lookup-specific structures
+        lookup_table_map = {}
+        lookup_condition_map = {}
+        lookup_ports_map = {}
+        lookup_porttype_map = {}
 
+        # --------------------------------------------------------------
+        # Helper for table attributes
+        # --------------------------------------------------------------
+        def _find_table_attr_value(tr_elem, contains_text):
+            contains_text = contains_text.lower()
+            for a in tr_elem.findall(".//TABLEATTRIBUTE"):
+                n = (a.get("NAME") or "").lower()
+                v = a.get("VALUE") or ""
+                if contains_text in n:
+                    return v
+            return ""
+
+        # --------------------------------------------------------------
+        # Parse transformations
+        # --------------------------------------------------------------
+        for tr_name, tr in transformations.items():
+            tr_type = tr.get("TYPE")
             transformation_types[tr_name] = tr_type
-            transform_fields[tr_name] = []
 
-            for tf in tr.findall(".//TRANSFORMFIELD"):
-                transform_fields[tr_name].append({
-                    "Transform Field": safe_get(tf, "NAME"),
-                    "Transform Field Data Type": safe_get(tf, "DATATYPE"),
-                    "Transformation Logic": safe_get(tf, "EXPRESSION")
-                })
-
-            attrs = {}
-            for ta in tr.findall(".//TABLEATTRIBUTE"):
-                attrs[safe_get(ta, "NAME")] = safe_get(ta, "VALUE")
-
-            table_attributes_dict[tr_name] = "; ".join(
-                f"{k}: {v}" for k, v in attrs.items()
+            # Table attributes
+            table_attr_dict = {
+                attr.get("NAME"): attr.get("VALUE")
+                for attr in tr.findall(".//TABLEATTRIBUTE")
+            }
+            table_attr_logic = "; ".join(
+                f"{k}: {v}"
+                for k, v in table_attr_dict.items()
                 if k != "Sql Query" and v
             )
+            table_attributes_dict[tr_name] = table_attr_logic
 
+            # Source Qualifier SQL
             if tr_type == "Source Qualifier":
-                table_loading_logic[tr_name] = attrs.get("Sql Query", "")
+                for attr in tr.findall(".//TABLEATTRIBUTE"):
+                    if attr.get("NAME") == "Sql Query":
+                        table_loading_logic_map[tr_name] = attr.get("VALUE")
 
-        # ------------------------------
-        # CONNECTORS
-        # ------------------------------
-        connector_map = {}
-        for c in mapping.findall(".//CONNECTOR"):
-            connector_map[
-                (safe_get(c, "TOINSTANCE"), safe_get(c, "TOFIELD"))
-            ] = (
-                safe_get(c, "FROMINSTANCE"),
-                safe_get(c, "FROMFIELD")
-            )
-
-        # ------------------------------
-        # SOURCE INSTANCE → OBJECT
-        # ------------------------------
-        instance_to_source_object = {}
-        for inst_name, inst in instances.items():
-            if inst["TYPE"] == "SOURCE":
-                instance_to_source_object[inst_name] = inst["TRANSFORMATION_NAME"]
-
-        # ====================================================
-        # PATCH 1: ROBUST SOURCE RESOLUTION (MINIMAL)
-        # ====================================================
-
-        def get_source_datatype(inst, field, visited=None):
-            if visited is None:
-                visited = set()
-
-            if (inst, field) in visited:
-                return "", "", ""
-
-            visited.add((inst, field))
-
-            # SOURCE
-            if inst in instance_to_source_object:
-                src = instance_to_source_object[inst]
-                return (
-                    src,
-                    field,
-                    source_fields.get(src, {}).get(field, "")
-                )
-
-            # LOOKUP → treat lookup table as source
-            tr_name = instances.get(inst, {}).get("TRANSFORMATION_NAME")
-            tr_type = transformation_types.get(tr_name, "")
-
-            if tr_type.lower().startswith("lookup"):
-                return table_attributes_dict.get(tr_name, ""), field, ""
-
-            # FOLLOW CONNECTOR
-            prev = connector_map.get((inst, field))
-            if prev:
-                return get_source_datatype(prev[0], prev[1], visited)
-
-            return "", "", ""
-
-        # ====================================================
-        # PATCH 2: SAFE TRACE (kept minimal)
-        # ====================================================
-
-        def trace_lineage(curr_inst, curr_field, path):
-            if (curr_inst, curr_field) in path:
-                return None
-
-            path = path + [(curr_inst, curr_field)]
-
-            inst_info = instances.get(curr_inst, {})
-
-            # MAPPLET (minimal expansion)
-            if inst_info.get("TYPE") == "MAPPLET":
-                mp = mapplets.get(inst_info.get("TRANSFORMATION_NAME"))
-                if mp is not None:
-                    mp_connectors = {}
-                    for c in mp.findall(".//CONNECTOR"):
-                        mp_connectors[
-                            (safe_get(c, "TOINSTANCE"), safe_get(c, "TOFIELD"))
-                        ] = (
-                            safe_get(c, "FROMINSTANCE"),
-                            safe_get(c, "FROMFIELD")
-                        )
-
-                    for (ti, tf), (fi, ff) in mp_connectors.items():
-                        if tf == curr_field:
-                            return trace_lineage(fi, ff, path)
-
-            prev = connector_map.get((curr_inst, curr_field))
-            if prev:
-                return trace_lineage(prev[0], prev[1], path)
-
-            return (curr_inst, curr_field)
-
-        # ====================================================
-        # FINAL ROW BUILD (UNCHANGED BEHAVIOR)
-        # ====================================================
-        for inst_name, inst in instances.items():
-            if inst["TYPE"] != "TARGET":
-                continue
-
-            tgt_table = inst["TRANSFORMATION_NAME"]
-
-            for tgt_field, tgt_dtype in target_fields.get(tgt_table, {}).items():
-                prev = connector_map.get((inst_name, tgt_field))
-                if not prev:
-                    continue  # ONLY ACTIVE MAPPINGS
-
-                prev_inst, prev_field = prev
-                tr_name = instances.get(prev_inst, {}).get("TRANSFORMATION_NAME", "")
-                tr_type = transformation_types.get(tr_name, "")
-
-                tf_logic = ""
-                tf_dtype = ""
-
-                for tf in transform_fields.get(tr_name, []):
-                    if tf["Transform Field"] == prev_field:
-                        tf_logic = tf["Transformation Logic"]
-                        tf_dtype = tf["Transform Field Data Type"]
-                        break
-
-                if not tf_logic:
-                    tf_logic = table_attributes_dict.get(tr_name, "")
-
-                src_table, src_col, src_dtype = get_source_datatype(prev_inst, prev_field)
-
-                lineage_rows.append({
-                    "Mapping Name": mapping_name,
-                    "Target Table Name": tgt_table,
-                    "Target Column Name": tgt_field,
-                    "Target Data Type": tgt_dtype,
-                    "Source Table Name": src_table,
-                    "Source Column Name": src_col,
-                    "Source Data Type": src_dtype,
-                    "Transformation Name": tr_name,
-                    "Transformation Type": tr_type,
-                    "Transform Field": prev_field,
-                    "Transform Field Data Type": tf_dtype,
-                    "Transformation Logic": tf_logic,
-                    "Table Loading Logic": table_loading_logic.get(tr_name, "")
+            # Transform fields
+            transform_fields_dict[tr_name] = []
+            for tf in tr.findall(".//TRANSFORMFIELD"):
+                transform_fields_dict[tr_name].append({
+                    "Transform Field": tf.get("NAME"),
+                    "Transform Field Data Type": tf.get("DATATYPE"),
+                    "Transformation Logic": tf.get("EXPRESSION") or ""
                 })
 
-    return pd.DataFrame(lineage_rows)
+            # ----------------------------------------------------------
+            # 🔹 NEW: Lookup handling
+            # ----------------------------------------------------------
+            if (tr_type or "").lower() in {"lookup", "lookup procedure"}:
+                lookup_table = (
+                    _find_table_attr_value(tr, "lookup table")
+                    or _find_table_attr_value(tr, "lookup source")
+                    or _find_table_attr_value(tr, "lookup object")
+                )
+                lookup_condition = (
+                    _find_table_attr_value(tr, "lookup condition")
+                    or _find_table_attr_value(tr, "sql override")
+                )
 
+                if lookup_table:
+                    lookup_table_map[tr_name] = lookup_table
+                if lookup_condition:
+                    lookup_condition_map[tr_name] = lookup_condition
 
-# ============================================================
-# USAGE
-# ============================================================
+                lookup_ports_map[tr_name] = {}
+                lookup_porttype_map[tr_name] = {}
 
-if __name__ == "__main__":
-    df = extract_informatica_mappings_single_df("mapping.xml")
-    df.to_excel("informatica_lineage.xlsx", index=False)
-    print(df.head())
+                for tf in tr.findall(".//TRANSFORMFIELD"):
+                    pname = tf.get("NAME")
+                    ptype = (tf.get("PORTTYPE") or "").upper()
+                    pdt = tf.get("DATATYPE")
+                    lookup_porttype_map[tr_name][pname] = ptype
+                    if ptype == "LOOKUP":
+                        lookup_ports_map[tr_name][pname] = pdt
+
+        # --------------------------------------------------------------
+        # Connectors
+        # --------------------------------------------------------------
+        connectors = mapping.findall(".//CONNECTOR")
+        connector_map = {}
+        for conn in connectors:
+            connector_map[
+                (conn.get("TOINSTANCE"), conn.get("TOFIELD"))
+            ] = (conn.get("FROMINSTANCE"), conn.get("FROMFIELD"))
+
+        # --------------------------------------------------------------
+        # Recursive source datatype resolution
+        # --------------------------------------------------------------
+        def get_source_datatype(inst, field):
+            if inst in instance_to_source_object:
+                src_obj = instance_to_source_object[inst]
+                return (
+                    src_obj,
+                    field,
+                    source_fields.get(src_obj, {}).get(field, "")
+                )
+            prev = connector_map.get((inst, field))
+            if prev:
+                return get_source_datatype(prev[0], prev[1])
+            return "", "", ""
+
+        # --------------------------------------------------------------
+        # Resolve lookup source
+        # --------------------------------------------------------------
+        def resolve_lookup(trans_name, field_name, logic):
+            table = lookup_table_map.get(trans_name)
+            if not table:
+                return None
+            ports = lookup_ports_map.get(trans_name, {})
+            if field_name in ports:
+                return (
+                    table,
+                    field_name,
+                    ports[field_name],
+                    lookup_condition_map.get(trans_name, "")
+                )
+            for lp in ports:
+                if lp in (logic or ""):
+                    return (
+                        table,
+                        lp,
+                        ports[lp],
+                        lookup_condition_map.get(trans_name, "")
+                    )
+            return None
+
+        # --------------------------------------------------------------
+        # Trace lineage
+        # --------------------------------------------------------------
+        def trace_lineage(curr_inst, curr_field, path):
+            if (curr_inst, curr_field) in path:
+                return []
+
+            tr_name = curr_inst
+            tr_type = transformation_types.get(tr_name, "")
+
+            tf_logic = ""
+            tf_field = curr_field
+            tf_data_type = ""
+
+            for tf in transform_fields_dict.get(tr_name, []):
+                if tf["Transform Field"] == curr_field:
+                    tf_logic = tf["Transformation Logic"]
+                    tf_data_type = tf["Transform Field Data Type"]
+                    break
+
+            if not tf_logic:
+                tf_logic = table_attributes_dict.get(tr_name, "")
+
+            table_loading_logic = ""
+            if tr_type == "Source Qualifier":
+                table_loading_logic = table_loading_logic_map.get(tr_name, "")
+
+            # 🔹 Lookup override
+            lookup_res = None
+            if (tr_type or "").lower() in {"lookup", "lookup procedure"}:
+                lookup_res = resolve_lookup(tr_name, curr_field, tf_logic)
+
+            if lookup_res:
+                src_table, src_col, src_dt, lkp_cond = lookup_res
+                if lkp_cond:
+                    tf_logic = f"{tf_logic}; Lookup Condition: {lkp_cond}" if tf_logic else lkp_cond
+            else:
+                src_table, src_col, src_dt = get_source_datatype(curr_inst, curr_field)
+
+            return [{
+                "Mapping Name": mapping_name,
+                "Target Table Name": "",
+                "Target Column Name": "",
+                "Target Data Type": "",
+                "Source Table Name": src_table,
+                "Source Column Name": src_col,
+                "Source Data Type": src_dt,
+                "Transformation Name": tr_name,
+                "Transformation Type": tr_type,
+                "Transform Field": tf_field,
+                "Transform Field Data Type": tf_data_type,
+                "Transformation Logic": tf_logic,
+                "Table Loading Logic": table_loading_logic
+            }]
+
+        # --------------------------------------------------------------
+        # Targets
+        # --------------------------------------------------------------
+        for inst in mapping.findall(".//INSTANCE"):
+            if inst.get("TYPE") == "TARGET":
+                tgt_name = inst.get("NAME")
+                tgt_obj = target_fields.get(tgt_name, {})
+
+                for tgt_field, tgt_dt in tgt_obj.items():
+                    prev = connector_map.get((tgt_name, tgt_field))
+                    if prev:
+                        hops = trace_lineage(prev[0], prev[1], [])
+                        if hops:
+                            hop = hops[0]
+                            hop.update({
+                                "Target Table Name": tgt_name,
+                                "Target Column Name": tgt_field,
+                                "Target Data Type": tgt_dt
+                            })
+                            lineage.append(hop)
+                    else:
+                        lineage.append({
+                            "Mapping Name": mapping_name,
+                            "Target Table Name": tgt_name,
+                            "Target Column Name": tgt_field,
+                            "Target Data Type": tgt_dt,
+                            "Source Table Name": "",
+                            "Source Column Name": "",
+                            "Source Data Type": "",
+                            "Transformation Name": "",
+                            "Transformation Type": "",
+                            "Transform Field": "",
+                            "Transform Field Data Type": "",
+                            "Transformation Logic": "",
+                            "Table Loading Logic": ""
+                        })
+
+    return pd.DataFrame(lineage)
