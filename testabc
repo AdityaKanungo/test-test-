@@ -3,293 +3,225 @@ import pandas as pd
 
 
 # ============================================================
-# Utility helpers
+# Helpers
 # ============================================================
 
 def safe_get(elem, attr, default=""):
     if elem is None:
         return default
-    v = elem.get(attr)
-    return v if v is not None else default
+    return elem.get(attr) or default
 
 
 # ============================================================
-# Main extractor
+# Main function (drop-in replacement)
 # ============================================================
 
-class InformaticaLineageExtractor:
+def extract_informatica_mappings_single_df(xml_file):
 
-    def __init__(self, xml_file):
-        self.tree = ET.parse(xml_file)
-        self.root = self.tree.getroot()
+    tree = ET.parse(xml_file)
+    root = tree.getroot()
 
-        self.source_fields = {}
-        self.target_fields = {}
-        self.mapplets = {}
-
-        self._load_sources()
-        self._load_targets()
-        self._load_mapplets()
+    lineage = []
 
     # --------------------------------------------------------
-    # Load global metadata
+    # Source fields
     # --------------------------------------------------------
-
-    def _load_sources(self):
-        for src in self.root.findall(".//SOURCE"):
-            name = safe_get(src, "NAME")
-            self.source_fields[name] = {}
-            for sf in src.findall(".//SOURCEFIELD"):
-                self.source_fields[name][safe_get(sf, "NAME")] = safe_get(sf, "DATATYPE")
-
-    def _load_targets(self):
-        for tgt in self.root.findall(".//TARGET"):
-            name = safe_get(tgt, "NAME")
-            self.target_fields[name] = {}
-            for tf in tgt.findall(".//TARGETFIELD"):
-                self.target_fields[name][safe_get(tf, "NAME")] = safe_get(tf, "DATATYPE")
-
-    def _load_mapplets(self):
-        for mp in self.root.findall(".//MAPPLET"):
-            self.mapplets[safe_get(mp, "NAME")] = mp
+    source_fields = {}
+    for src in root.findall(".//SOURCE"):
+        src_name = safe_get(src, "NAME")
+        source_fields[src_name] = {}
+        for sf in src.findall(".//SOURCEFIELD"):
+            source_fields[src_name][safe_get(sf, "NAME")] = safe_get(sf, "DATATYPE")
 
     # --------------------------------------------------------
-    # Parse mapping container (MAPPING or MAPPLET)
+    # Target fields
     # --------------------------------------------------------
+    target_fields = {}
+    for tgt in root.findall(".//TARGET"):
+        tgt_name = safe_get(tgt, "NAME")
+        target_fields[tgt_name] = {}
+        for tf in tgt.findall(".//TARGETFIELD"):
+            target_fields[tgt_name][safe_get(tf, "NAME")] = safe_get(tf, "DATATYPE")
 
-    def parse_instances(self, container):
-        out = {}
-        for inst in container.findall(".//INSTANCE"):
-            out[safe_get(inst, "NAME")] = {
+    # --------------------------------------------------------
+    # Mapplets
+    # --------------------------------------------------------
+    mapplets = {safe_get(mp, "NAME"): mp for mp in root.findall(".//MAPPLET")}
+
+    # --------------------------------------------------------
+    # Process each mapping
+    # --------------------------------------------------------
+    for mapping in root.findall(".//MAPPING"):
+        mapping_name = safe_get(mapping, "NAME")
+
+        # Instances
+        instances = {}
+        for inst in mapping.findall(".//INSTANCE"):
+            instances[safe_get(inst, "NAME")] = {
                 "type": safe_get(inst, "TYPE"),
                 "transformation": safe_get(inst, "TRANSFORMATION_NAME")
             }
-        return out
 
-    def parse_transformations(self, container):
-        out = {}
-        for tr in container.findall(".//TRANSFORMATION"):
+        # Transformations
+        transformations = {}
+        transformation_types = {}
+        transform_fields = {}
+        table_attributes = {}
+        table_loading_logic = {}
+
+        for tr in mapping.findall(".//TRANSFORMATION"):
             tr_name = safe_get(tr, "NAME")
             tr_type = safe_get(tr, "TYPE")
 
-            fields = {}
-            for tf in tr.findall(".//TRANSFORMFIELD"):
-                fields[safe_get(tf, "NAME")] = {
-                    "datatype": safe_get(tf, "DATATYPE"),
-                    "expression": safe_get(tf, "EXPRESSION"),
-                    "porttype": safe_get(tf, "PORTTYPE")
-                }
+            transformation_types[tr_name] = tr_type
+            transform_fields[tr_name] = []
 
+            # Transform fields
+            for tf in tr.findall(".//TRANSFORMFIELD"):
+                transform_fields[tr_name].append({
+                    "Transform Field": safe_get(tf, "NAME"),
+                    "Transform Field Data Type": safe_get(tf, "DATATYPE"),
+                    "Transformation Logic": safe_get(tf, "EXPRESSION")
+                })
+
+            # Table attributes
             attrs = {}
             for ta in tr.findall(".//TABLEATTRIBUTE"):
                 attrs[safe_get(ta, "NAME")] = safe_get(ta, "VALUE")
 
-            out[tr_name] = {
-                "type": tr_type,
-                "fields": fields,
-                "attrs": attrs
-            }
-        return out
+            table_attributes[tr_name] = "; ".join(
+                f"{k}: {v}" for k, v in attrs.items()
+                if k != "Sql Query" and v
+            )
 
-    def parse_connectors(self, container):
-        out = {}
-        for c in container.findall(".//CONNECTOR"):
-            out[(safe_get(c, "TOINSTANCE"), safe_get(c, "TOFIELD"))] = (
+            # Source Qualifier SQL
+            if tr_type == "Source Qualifier":
+                table_loading_logic[tr_name] = attrs.get("Sql Query", "")
+
+        # ----------------------------------------------------
+        # Connectors
+        # ----------------------------------------------------
+        connector_map = {}
+        for c in mapping.findall(".//CONNECTOR"):
+            connector_map[
+                (safe_get(c, "TOINSTANCE"), safe_get(c, "TOFIELD"))
+            ] = (
                 safe_get(c, "FROMINSTANCE"),
                 safe_get(c, "FROMFIELD")
             )
-        return out
 
-    # --------------------------------------------------------
-    # Recursive lineage tracing
-    # --------------------------------------------------------
+        # ----------------------------------------------------
+        # Map instance → source object
+        # ----------------------------------------------------
+        instance_to_source_object = {}
+        for inst in mapping.findall(".//INSTANCE"):
+            if safe_get(inst, "TYPE") == "SOURCE":
+                instance_to_source_object[
+                    safe_get(inst, "NAME")
+                ] = safe_get(inst, "TRANSFORMATION_NAME")
 
-    def trace_source(
-        self,
-        inst,
-        field,
-        instances,
-        transforms,
-        connectors,
-        visited
-    ):
-        if (inst, field) in visited:
-            return []
+        # ----------------------------------------------------
+        # Recursive lineage tracing
+        # ----------------------------------------------------
+        def trace_lineage(inst, field, visited):
+            if (inst, field) in visited:
+                return None
+            visited.add((inst, field))
 
-        visited.add((inst, field))
+            info = instances.get(inst)
+            if not info:
+                return None
 
-        info = instances.get(inst)
-        if not info:
-            return []
-
-        inst_type = info["type"]
-        tr_name = info["transformation"]
-
-        # SOURCE
-        if inst_type == "SOURCE":
-            dtype = self.source_fields.get(tr_name, {}).get(field, "")
-            return [{
-                "Source Table Name": tr_name,
-                "Source Column Name": field,
-                "Source Data Type": dtype
-            }]
-
-        # LOOKUP
-        if inst_type == "TRANSFORMATION":
-            tr = transforms.get(tr_name, {})
-            if tr.get("type", "").lower().startswith("lookup"):
-                lookup_table = (
-                    tr["attrs"].get("Lookup table name")
-                    or tr["attrs"].get("Lookup Sql Override")
-                    or ""
-                )
-                dtype = tr["fields"].get(field, {}).get("datatype", "")
-                return [{
-                    "Source Table Name": lookup_table,
+            # SOURCE
+            if info["type"] == "SOURCE":
+                src = instance_to_source_object.get(inst, "")
+                return {
+                    "Source Table Name": src,
                     "Source Column Name": field,
-                    "Source Data Type": dtype
-                }]
+                    "Source Data Type": source_fields.get(src, {}).get(field, "")
+                }
 
-        # MAPPLET
-        if inst_type == "MAPPLET":
-            mp = self.mapplets.get(tr_name)
-            if mp is None:
-                return []
+            # LOOKUP
+            if info["type"] == "TRANSFORMATION":
+                tr_name = info["transformation"]
+                if transformation_types.get(tr_name, "").lower().startswith("lookup"):
+                    return {
+                        "Source Table Name": table_attributes.get(tr_name, ""),
+                        "Source Column Name": field,
+                        "Source Data Type": ""
+                    }
 
-            mp_instances = self.parse_instances(mp)
-            mp_transforms = self.parse_transformations(mp)
-            mp_connectors = self.parse_connectors(mp)
-
-            # Find OUTPUT transformation
-            for i, info2 in mp_instances.items():
-                if info2["type"] == "TRANSFORMATION":
-                    tr2 = mp_transforms.get(info2["transformation"], {})
-                    if tr2.get("type") == "Output Transformation":
-                        if field in tr2["fields"]:
-                            return self.trace_source(
-                                i, field,
-                                mp_instances,
-                                mp_transforms,
-                                mp_connectors,
-                                visited
-                            )
-            return []
-
-        # FOLLOW CONNECTOR
-        prev = connectors.get((inst, field))
-        if prev:
-            return self.trace_source(
-                prev[0],
-                prev[1],
-                instances,
-                transforms,
-                connectors,
-                visited
-            )
-
-        return []
-
-    # --------------------------------------------------------
-    # Extract lineage dataframe
-    # --------------------------------------------------------
-
-    def extract(self):
-        rows = []
-
-        for mapping in self.root.findall(".//MAPPING"):
-            mapping_name = safe_get(mapping, "NAME")
-
-            instances = self.parse_instances(mapping)
-            transforms = self.parse_transformations(mapping)
-            connectors = self.parse_connectors(mapping)
-
-            for inst_name, inst in instances.items():
-                if inst["type"] != "TARGET":
-                    continue
-
-                tgt_table = inst["transformation"]
-                tgt_fields = self.target_fields.get(tgt_table, {})
-
-                for tgt_field, tgt_dtype in tgt_fields.items():
-                    prev = connectors.get((inst_name, tgt_field))
-
-                    if not prev:
-                        rows.append({
-                            "Mapping Name": mapping_name,
-                            "Target Table Name": tgt_table,
-                            "Target Column Name": tgt_field,
-                            "Target Data Type": tgt_dtype,
-                            "Source Table Name": "",
-                            "Source Column Name": "",
-                            "Source Data Type": "",
-                            "Transformation Name": "",
-                            "Transformation Type": "",
-                            "Transformation Logic": ""
-                        })
-                        continue
-
-                    prev_inst, prev_field = prev
-                    tr_info = instances.get(prev_inst, {})
-                    tr_name = tr_info.get("transformation", "")
-                    tr_type = transforms.get(tr_name, {}).get("type", "")
-
-                    tf = transforms.get(tr_name, {}).get("fields", {}).get(prev_field, {})
-                    logic = tf.get("expression", "")
-                    if not logic:
-                        logic = "; ".join(
-                            f"{k}:{v}"
-                            for k, v in transforms.get(tr_name, {}).get("attrs", {}).items()
-                            if v
+            # MAPPLET
+            if info["type"] == "MAPPLET":
+                mp = mapplets.get(info["transformation"])
+                if mp is not None:
+                    mp_connectors = {}
+                    for c in mp.findall(".//CONNECTOR"):
+                        mp_connectors[
+                            (safe_get(c, "TOINSTANCE"), safe_get(c, "TOFIELD"))
+                        ] = (
+                            safe_get(c, "FROMINSTANCE"),
+                            safe_get(c, "FROMFIELD")
                         )
 
-                    sources = self.trace_source(
-                        prev_inst,
-                        prev_field,
-                        instances,
-                        transforms,
-                        connectors,
-                        set()
-                    )
+                    for i in mp.findall(".//INSTANCE"):
+                        if safe_get(i, "TYPE") == "TRANSFORMATION":
+                            prev = mp_connectors.get((safe_get(i, "NAME"), field))
+                            if prev:
+                                return trace_lineage(prev[0], prev[1], visited)
 
-                    if not sources:
-                        sources = [{
-                            "Source Table Name": "",
-                            "Source Column Name": "",
-                            "Source Data Type": ""
-                        }]
+            # FOLLOW CONNECTOR
+            prev = connector_map.get((inst, field))
+            if prev:
+                return trace_lineage(prev[0], prev[1], visited)
 
-                    for s in sources:
-                        rows.append({
-                            "Mapping Name": mapping_name,
-                            "Target Table Name": tgt_table,
-                            "Target Column Name": tgt_field,
-                            "Target Data Type": tgt_dtype,
-                            "Source Table Name": s["Source Table Name"],
-                            "Source Column Name": s["Source Column Name"],
-                            "Source Data Type": s["Source Data Type"],
-                            "Transformation Name": tr_name,
-                            "Transformation Type": tr_type,
-                            "Transformation Logic": logic
-                        })
+            return None
 
-        return pd.DataFrame(rows)
+        # ----------------------------------------------------
+        # Build final lineage rows (EXACT schema)
+        # ----------------------------------------------------
+        for inst_name, inst in instances.items():
+            if inst["type"] != "TARGET":
+                continue
 
+            tgt_table = inst["transformation"]
+            for tgt_field, tgt_dtype in target_fields.get(tgt_table, {}).items():
 
-# ============================================================
-# Public API
-# ============================================================
+                prev = connector_map.get((inst_name, tgt_field))
+                if not prev:
+                    continue  # 🔴 only active mappings
 
-def extract_informatica_mappings_single_df(xml_file):
-    extractor = InformaticaLineageExtractor(xml_file)
-    return extractor.extract()
+                prev_inst, prev_field = prev
+                tr_name = instances.get(prev_inst, {}).get("transformation", "")
+                tr_type = transformation_types.get(tr_name, "")
 
+                tf_logic = ""
+                tf_dtype = ""
+                for tf in transform_fields.get(tr_name, []):
+                    if tf["Transform Field"] == prev_field:
+                        tf_logic = tf["Transformation Logic"]
+                        tf_dtype = tf["Transform Field Data Type"]
+                        break
 
-# ============================================================
-# Example
-# ============================================================
+                if not tf_logic:
+                    tf_logic = table_attributes.get(tr_name, "")
 
-if __name__ == "__main__":
-    df = extract_informatica_mappings_single_df("mapping.xml")
-    df.to_excel("informatica_lineage.xlsx", index=False)
-    print(df.head())
+                src = trace_lineage(prev_inst, prev_field, set()) or {}
 
+                lineage.append({
+                    "Mapping Name": mapping_name,
+                    "Target Table Name": tgt_table,
+                    "Target Column Name": tgt_field,
+                    "Target Data Type": tgt_dtype,
+                    "Source Table Name": src.get("Source Table Name", ""),
+                    "Source Column Name": src.get("Source Column Name", ""),
+                    "Source Data Type": src.get("Source Data Type", ""),
+                    "Transformation Name": tr_name,
+                    "Transformation Type": tr_type,
+                    "Transform Field": prev_field,
+                    "Transform Field Data Type": tf_dtype,
+                    "Transformation Logic": tf_logic,
+                    "Table Loading Logic": table_loading_logic.get(tr_name, "")
+                })
+
+    return pd.DataFrame(lineage)
