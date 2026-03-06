@@ -1,1 +1,475 @@
+import re
+from pathlib import Path
+from typing import Dict, List, Tuple, Optional
+
+from openpyxl import load_workbook, Workbook
+
+
+# =========================================================
+# CONFIG
+# =========================================================
+INPUT_FILE = "Issue tracker.xlsx"
+OUTPUT_FILE = "Issue_tracker_processed.xlsx"
+
+# Raw sheet names expected.
+# This will also tolerate minor naming variations like:
+# Summary-P1, Summary-P2, Summary-P3, Summary-P4, Summary-P-4
+RAW_SHEET_PATTERNS = [
+    r"^Summary[- ]?P1$",
+    r"^Summary[- ]?P2$",
+    r"^Summary[- ]?P3$",
+    r"^Summary[- ]?P4$",
+    r"^Summary[- ]?P[- ]?4$",
+]
+
+
+# =========================================================
+# HELPERS
+# =========================================================
+def normalize_text(x) -> str:
+    if x is None:
+        return ""
+    return str(x).strip()
+
+
+def normalize_header(x) -> str:
+    """
+    Normalize header text so minor formatting differences don't break the code.
+    """
+    x = normalize_text(x).lower()
+    x = x.replace("\n", " ")
+    x = re.sub(r"\s+", " ", x).strip()
+    return x
+
+
+def sheet_matches(sheet_name: str) -> bool:
+    for pattern in RAW_SHEET_PATTERNS:
+        if re.match(pattern, sheet_name.strip(), flags=re.IGNORECASE):
+            return True
+    return False
+
+
+def get_priority_from_sheet(sheet_name: str) -> str:
+    """
+    Example:
+      Summary-P1  -> P1
+      Summary-P2  -> P2
+      Summary-P-4 -> P4
+    """
+    m = re.search(r"P[- ]?(\d+)", sheet_name, flags=re.IGNORECASE)
+    if m:
+        return f"P{m.group(1)}"
+    return "UNKNOWN"
+
+
+def build_merged_value_map(ws) -> Dict[Tuple[int, int], object]:
+    """
+    Returns a dict mapping every cell in a merged range to the top-left value.
+    This makes reading merged cells much easier.
+    """
+    merged_map = {}
+
+    for merged_range in ws.merged_cells.ranges:
+        min_row, min_col, max_row, max_col = (
+            merged_range.min_row,
+            merged_range.min_col,
+            merged_range.max_row,
+            merged_range.max_col,
+        )
+        top_left_value = ws.cell(min_row, min_col).value
+
+        for r in range(min_row, max_row + 1):
+            for c in range(min_col, max_col + 1):
+                merged_map[(r, c)] = top_left_value
+
+    return merged_map
+
+
+def get_cell_value(ws, row: int, col: int, merged_map: Dict[Tuple[int, int], object]):
+    """
+    Reads real value or merged top-left value.
+    """
+    if (row, col) in merged_map:
+        return merged_map[(row, col)]
+    return ws.cell(row, col).value
+
+
+def get_row_values(ws, row_num: int, max_col: int, merged_map: Dict[Tuple[int, int], object]) -> List[object]:
+    return [get_cell_value(ws, row_num, col, merged_map) for col in range(1, max_col + 1)]
+
+
+def find_header_row_and_map(ws, merged_map: Dict[Tuple[int, int], object], search_rows: int = 10):
+    """
+    Finds the header row by looking for a row containing expected column labels.
+    """
+    expected_keywords = [
+        "internal track",
+        "interface name",
+        "frequency",
+        "state wide only",
+        "json file name",
+    ]
+
+    best_row = None
+    best_score = -1
+    best_headers = None
+
+    for r in range(1, min(search_rows, ws.max_row) + 1):
+        row_values = get_row_values(ws, r, ws.max_column, merged_map)
+        normalized = [normalize_header(v) for v in row_values]
+
+        score = sum(
+            any(keyword in cell for cell in normalized)
+            for keyword in expected_keywords
+        )
+
+        if score > best_score:
+            best_score = score
+            best_row = r
+            best_headers = normalized
+
+    if best_row is None or best_score <= 0:
+        raise ValueError(f"Could not detect header row in sheet '{ws.title}'")
+
+    header_map = {}
+    for idx, h in enumerate(best_headers, start=1):
+        if h:
+            header_map[h] = idx
+
+    return best_row, header_map
+
+
+def find_column(header_map: Dict[str, int], candidate_names: List[str]) -> Optional[int]:
+    """
+    Match column by exact or contains logic.
+    """
+    # exact
+    for name in candidate_names:
+        if name in header_map:
+            return header_map[name]
+
+    # contains
+    for header_text, col_idx in header_map.items():
+        for name in candidate_names:
+            if name in header_text:
+                return col_idx
+
+    return None
+
+
+def clean_filename_token(token: str) -> str:
+    token = normalize_text(token)
+    token = token.strip(",;")
+    token = token.replace("\n", " ").strip()
+    token = re.sub(r"\s+", " ", token)
+    return token
+
+
+def split_filename_list(text: str) -> List[str]:
+    """
+    Split filename list robustly.
+    Accepts comma-separated and line-separated values.
+    """
+    if not text:
+        return []
+
+    text = text.replace("\r", "\n")
+    text = text.replace(";", ",")
+    text = re.sub(r"\n+", "\n", text)
+
+    # First split by comma or newline
+    parts = re.split(r",|\n", text)
+
+    cleaned = []
+    for p in parts:
+        p = clean_filename_token(p)
+        if not p:
+            continue
+
+        # Ignore labels that are not actual filenames
+        lower_p = p.lower()
+        if lower_p.startswith("no. of files"):
+            continue
+        if lower_p.startswith("no of files"):
+            continue
+        if lower_p in {"inbound", "outbound"}:
+            continue
+
+        cleaned.append(p)
+
+    return cleaned
+
+
+def parse_inbound_outbound_files(text: str) -> Dict[str, List[str]]:
+    """
+    Parses cell text like:
+      Outbound(13): file1,file2,file3
+    or:
+      No. of files : 19
+      Inbound (6): 50WIN, S FILE, 50D01
+      Outbound(13): 40M01, 25D01
+
+    Returns:
+      {
+        "Inbound": [...],
+        "Outbound": [...]
+      }
+    """
+    result = {"Inbound": [], "Outbound": []}
+    txt = normalize_text(text)
+
+    if not txt:
+        return result
+
+    txt = txt.replace("\r", "\n")
+    txt = re.sub(r"[ \t]+", " ", txt)
+
+    # Case 1: explicit inbound/outbound blocks
+    pattern = re.compile(
+        r"(Inbound|Outbound)\s*\(\s*\d+\s*\)\s*:\s*(.*?)(?=(?:Inbound|Outbound)\s*\(\s*\d+\s*\)\s*:|$)",
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    matches = list(pattern.finditer(txt))
+
+    if matches:
+        for m in matches:
+            direction = m.group(1).capitalize()
+            body = m.group(2).strip()
+            result[direction] = split_filename_list(body)
+        return result
+
+    # Case 2: maybe only one direction appears, like "Outbound(13): ..."
+    single_pattern = re.compile(
+        r"(Inbound|Outbound)\s*\(\s*\d+\s*\)\s*:\s*(.*)$",
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    m = single_pattern.search(txt)
+    if m:
+        direction = m.group(1).capitalize()
+        body = m.group(2).strip()
+        result[direction] = split_filename_list(body)
+        return result
+
+    # Case 3: fallback - treat whole text as unknown list
+    # We will not guess direction here.
+    return result
+
+
+def status_from_result(value: str) -> str:
+    """
+    Convert raw unit test result into output-friendly status.
+    You can tweak this if your business rule changes.
+    """
+    v = normalize_text(value).strip().lower()
+    if v in {"pass", "passed", "completed", "done"}:
+        return "Completed"
+    if v in {"n/a", "na", "not applicable", ""}:
+        return ""
+    return v.title()
+
+
+def combine_interface_name(interface_name: str, frequency: str) -> str:
+    interface_name = normalize_text(interface_name)
+    frequency = normalize_text(frequency)
+
+    if interface_name and frequency:
+        return f"{interface_name} - {frequency}"
+    return interface_name or frequency
+
+
+def safe_str(x) -> str:
+    return "" if x is None else str(x).strip()
+
+
+# =========================================================
+# CORE TRANSFORMATION
+# =========================================================
+def process_sheet(ws) -> List[Dict[str, str]]:
+    """
+    Reads one raw summary sheet and converts it to row-level output.
+    """
+    merged_map = build_merged_value_map(ws)
+    header_row, header_map = find_header_row_and_map(ws, merged_map)
+
+    # Identify needed columns
+    col_internal_track = find_column(header_map, ["internal track"])
+    col_interface_name = find_column(header_map, ["interface name"])
+    col_frequency = find_column(header_map, ["frequency"])
+    col_files = find_column(header_map, ["# of files", "files with file names", "with file names"])
+    col_ut_inbound = find_column(header_map, ["unit testing inbound result"])
+    col_ut_outbound = find_column(header_map, ["unit testing outbound result"])
+    col_json_file = find_column(header_map, ["json file name"])
+
+    required = {
+        "internal track": col_internal_track,
+        "interface name": col_interface_name,
+        "frequency": col_frequency,
+        "files": col_files,
+        "json file name": col_json_file,
+    }
+
+    missing = [k for k, v in required.items() if v is None]
+    if missing:
+        raise ValueError(
+            f"Missing required columns in sheet '{ws.title}': {missing}\n"
+            f"Detected headers: {list(header_map.keys())}"
+        )
+
+    priority = get_priority_from_sheet(ws.title)
+    output_rows = []
+
+    for r in range(header_row + 1, ws.max_row + 1):
+        internal_track = safe_str(get_cell_value(ws, r, col_internal_track, merged_map))
+        interface_name = safe_str(get_cell_value(ws, r, col_interface_name, merged_map))
+        frequency = safe_str(get_cell_value(ws, r, col_frequency, merged_map))
+        files_cell = safe_str(get_cell_value(ws, r, col_files, merged_map))
+        json_file_name = safe_str(get_cell_value(ws, r, col_json_file, merged_map))
+
+        ut_inbound_raw = safe_str(get_cell_value(ws, r, col_ut_inbound, merged_map)) if col_ut_inbound else ""
+        ut_outbound_raw = safe_str(get_cell_value(ws, r, col_ut_outbound, merged_map)) if col_ut_outbound else ""
+
+        # Skip blank rows
+        if not any([internal_track, interface_name, frequency, files_cell, json_file_name]):
+            continue
+
+        parsed = parse_inbound_outbound_files(files_cell)
+        inbound_files = parsed.get("Inbound", [])
+        outbound_files = parsed.get("Outbound", [])
+
+        interface_name_out = combine_interface_name(interface_name, frequency)
+        inbound_status = status_from_result(ut_inbound_raw)
+        outbound_status = status_from_result(ut_outbound_raw)
+
+        # Inbound rows
+        for f in inbound_files:
+            output_rows.append(
+                {
+                    "Priority Bucket": priority,
+                    "Interface Name": interface_name_out,
+                    "IR Thread": internal_track,
+                    "JSON Name": json_file_name,
+                    "File Name": f,
+                    "Inbound / Outbound": "Inbound",
+                    "SeGOVConfig (SAT) Unit Testing Status": inbound_status,
+                    "Unit Test ETA(Date)": "",
+                    "Deferred for Setup in TFP": "",
+                    "Source Sheet": ws.title,
+                    "Source Row": r,
+                }
+            )
+
+        # Outbound rows
+        for f in outbound_files:
+            output_rows.append(
+                {
+                    "Priority Bucket": priority,
+                    "Interface Name": interface_name_out,
+                    "IR Thread": internal_track,
+                    "JSON Name": json_file_name,
+                    "File Name": f,
+                    "Inbound / Outbound": "Outbound",
+                    "SeGOVConfig (SAT) Unit Testing Status": outbound_status,
+                    "Unit Test ETA(Date)": "",
+                    "Deferred for Setup in TFP": "",
+                    "Source Sheet": ws.title,
+                    "Source Row": r,
+                }
+            )
+
+        # Optional fallback:
+        # If no filenames parsed but row still has data, create one row for debugging.
+        # You can comment this out if you don't want unmatched rows.
+        if not inbound_files and not outbound_files and any([internal_track, interface_name, json_file_name]):
+            output_rows.append(
+                {
+                    "Priority Bucket": priority,
+                    "Interface Name": interface_name_out,
+                    "IR Thread": internal_track,
+                    "JSON Name": json_file_name,
+                    "File Name": "",
+                    "Inbound / Outbound": "",
+                    "SeGOVConfig (SAT) Unit Testing Status": "",
+                    "Unit Test ETA(Date)": "",
+                    "Deferred for Setup in TFP": "",
+                    "Source Sheet": ws.title,
+                    "Source Row": r,
+                }
+            )
+
+    return output_rows
+
+
+# =========================================================
+# OUTPUT WRITING
+# =========================================================
+def auto_fit_columns(ws):
+    for column_cells in ws.columns:
+        max_length = 0
+        col_letter = column_cells[0].column_letter
+        for cell in column_cells:
+            val = "" if cell.value is None else str(cell.value)
+            max_length = max(max_length, len(val))
+        ws.column_dimensions[col_letter].width = min(max_length + 2, 60)
+
+
+def write_output(all_rows: List[Dict[str, str]], output_path: str):
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Processed"
+
+    headers = [
+        "Priority Bucket",
+        "Interface Name",
+        "IR Thread",
+        "JSON Name",
+        "File Name",
+        "Inbound / Outbound",
+        "SeGOVConfig (SAT) Unit Testing Status",
+        "Unit Test ETA(Date)",
+        "Deferred for Setup in TFP",
+        "Source Sheet",
+        "Source Row",
+    ]
+
+    ws.append(headers)
+
+    for row in all_rows:
+        ws.append([row.get(h, "") for h in headers])
+
+    auto_fit_columns(ws)
+    wb.save(output_path)
+
+
+# =========================================================
+# MAIN
+# =========================================================
+def main():
+    input_path = Path(INPUT_FILE)
+    if not input_path.exists():
+        raise FileNotFoundError(f"Could not find input file: {input_path.resolve()}")
+
+    wb = load_workbook(input_path, data_only=False)
+    raw_sheets = [ws for ws in wb.worksheets if sheet_matches(ws.title)]
+
+    if not raw_sheets:
+        raise ValueError(
+            f"No matching raw sheets found in workbook. "
+            f"Expected sheets like Summary-P1, Summary-P2, Summary-P3, Summary-P4."
+        )
+
+    all_rows = []
+    for ws in raw_sheets:
+        try:
+            rows = process_sheet(ws)
+            all_rows.extend(rows)
+            print(f"Processed sheet: {ws.title} | output rows: {len(rows)}")
+        except Exception as e:
+            print(f"ERROR processing sheet '{ws.title}': {e}")
+
+    write_output(all_rows, OUTPUT_FILE)
+    print(f"\nDone. Output written to: {Path(OUTPUT_FILE).resolve()}")
+
+
+if __name__ == "__main__":
+    main()
 
