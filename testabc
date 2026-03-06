@@ -3,6 +3,7 @@ from pathlib import Path
 from typing import Dict, List, Tuple, Optional
 
 from openpyxl import load_workbook, Workbook
+from openpyxl.styles import Alignment, Font
 
 
 # =========================================================
@@ -24,9 +25,7 @@ RAW_SHEET_PATTERNS = [
 # BASIC HELPERS
 # =========================================================
 def normalize_text(x) -> str:
-    if x is None:
-        return ""
-    return str(x).strip()
+    return "" if x is None else str(x).strip()
 
 
 def safe_str(x) -> str:
@@ -48,33 +47,21 @@ def clean_token(token: str) -> str:
 
 
 def normalize_compare_token(token: str) -> str:
-    """
-    Normalize for file-name comparison:
-    - uppercase
-    - remove extra spaces
-    """
-    token = clean_token(token).upper()
-    return token
+    return clean_token(token).upper()
 
 
 def sheet_matches(sheet_name: str) -> bool:
-    for pattern in RAW_SHEET_PATTERNS:
-        if re.match(pattern, sheet_name.strip(), flags=re.IGNORECASE):
-            return True
-    return False
+    return any(re.match(p, sheet_name.strip(), flags=re.IGNORECASE) for p in RAW_SHEET_PATTERNS)
 
 
 def get_priority_from_sheet(sheet_name: str) -> str:
     m = re.search(r"P[- ]?(\d+)", sheet_name, flags=re.IGNORECASE)
-    if m:
-        return f"P{m.group(1)}"
-    return "UNKNOWN"
+    return f"P{m.group(1)}" if m else "UNKNOWN"
 
 
 def combine_interface_name(interface_name: str, frequency: str) -> str:
     interface_name = normalize_text(interface_name)
     frequency = normalize_text(frequency)
-
     if interface_name and frequency:
         return f"{interface_name} - {frequency}"
     return interface_name or frequency
@@ -86,11 +73,11 @@ def status_from_result(value: str) -> str:
         return "Completed"
     if v in {"n/a", "na", "not applicable", ""}:
         return ""
-    return value.strip()
+    return normalize_text(value)
 
 
 # =========================================================
-# MERGED CELL HANDLING
+# MERGED CELL HANDLING (INPUT)
 # =========================================================
 def build_merged_value_map(ws) -> Dict[Tuple[int, int], object]:
     merged_map = {}
@@ -102,7 +89,6 @@ def build_merged_value_map(ws) -> Dict[Tuple[int, int], object]:
             merged_range.max_col,
         )
         top_left_value = ws.cell(min_row, min_col).value
-
         for r in range(min_row, max_row + 1):
             for c in range(min_col, max_col + 1):
                 merged_map[(r, c)] = top_left_value
@@ -110,9 +96,7 @@ def build_merged_value_map(ws) -> Dict[Tuple[int, int], object]:
 
 
 def get_cell_value(ws, row: int, col: int, merged_map: Dict[Tuple[int, int], object]):
-    if (row, col) in merged_map:
-        return merged_map[(row, col)]
-    return ws.cell(row, col).value
+    return merged_map.get((row, col), ws.cell(row, col).value)
 
 
 def get_row_values(ws, row_num: int, max_col: int, merged_map: Dict[Tuple[int, int], object]) -> List[object]:
@@ -138,10 +122,7 @@ def find_header_row_and_map(ws, merged_map: Dict[Tuple[int, int], object], searc
         row_values = get_row_values(ws, r, ws.max_column, merged_map)
         normalized = [normalize_header(v) for v in row_values]
 
-        score = sum(
-            any(keyword in cell for cell in normalized)
-            for keyword in expected_keywords
-        )
+        score = sum(any(keyword in cell for cell in normalized) for keyword in expected_keywords)
 
         if score > best_score:
             best_score = score
@@ -168,25 +149,50 @@ def find_column(header_map: Dict[str, int], candidate_names: List[str]) -> Optio
         for name in candidate_names:
             if name in header_text:
                 return col_idx
-
     return None
 
 
 # =========================================================
-# FILE LIST PARSING
+# FILE CELL PARSING
 # =========================================================
+def strip_direction_tag_prefix(text: str) -> str:
+    """
+    Removes leading tags like:
+      Inbound(6):
+      Inbound:(6)
+      Outbound(13):
+      Outbound:(13)
+      Inbound :
+      Outbound :
+    """
+    text = normalize_text(text)
+    text = re.sub(
+        r"^\s*(Inbound|Outbound)\s*:?\s*(?:\(\s*\d+\s*\)\s*:?\s*)?",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+    return text.strip()
+
+
 def split_filename_list(text: str) -> List[str]:
+    """
+    Split file names safely from comma/newline separated text.
+    Also strips any leftover direction/count tags that may appear at the start.
+    """
     if not text:
         return []
 
     text = text.replace("\r", "\n")
     text = text.replace(";", ",")
     text = re.sub(r"\n+", "\n", text)
+    text = strip_direction_tag_prefix(text)
 
     parts = re.split(r",|\n", text)
     cleaned = []
 
     for p in parts:
+        p = strip_direction_tag_prefix(p)
         p = clean_token(p)
         if not p:
             continue
@@ -206,22 +212,29 @@ def split_filename_list(text: str) -> List[str]:
 
 def parse_inbound_outbound_files(text: str) -> Dict[str, List[str]]:
     """
-    Parse file cell like:
-      No. of files : 19
-      Inbound (6): A,B,C
+    Supports both styles:
+      Inbound(6): A,B,C
       Outbound(13): X,Y,Z
+
+    and
+      Inbound:(6) A,B,C
+      Outbound:(13) X,Y,Z
     """
     result = {"Inbound": [], "Outbound": []}
     txt = normalize_text(text)
-
     if not txt:
         return result
 
     txt = txt.replace("\r", "\n")
     txt = re.sub(r"[ \t]+", " ", txt)
 
+    # Matches both:
+    #  Inbound(6):
+    #  Inbound:(6)
+    #  Outbound(13):
+    #  Outbound:(13)
     pattern = re.compile(
-        r"(Inbound|Outbound)\s*\(\s*\d+\s*\)\s*:\s*(.*?)(?=(?:Inbound|Outbound)\s*\(\s*\d+\s*\)\s*:|$)",
+        r"(Inbound|Outbound)\s*:?\s*\(\s*\d+\s*\)\s*:?\s*(.*?)(?=(?:Inbound|Outbound)\s*:?\s*\(\s*\d+\s*\)\s*:?\s*|$)",
         flags=re.IGNORECASE | re.DOTALL,
     )
     matches = list(pattern.finditer(txt))
@@ -233,32 +246,34 @@ def parse_inbound_outbound_files(text: str) -> Dict[str, List[str]]:
             result[direction] = split_filename_list(body)
         return result
 
-    single_pattern = re.compile(
-        r"(Inbound|Outbound)\s*\(\s*\d+\s*\)\s*:\s*(.*)$",
+    # Fallback if the count isn't present but label is present
+    simple_pattern = re.compile(
+        r"(Inbound|Outbound)\s*:\s*(.*?)(?=(?:Inbound|Outbound)\s*:|$)",
         flags=re.IGNORECASE | re.DOTALL,
     )
-    m = single_pattern.search(txt)
-    if m:
-        direction = m.group(1).capitalize()
-        body = m.group(2).strip()
-        result[direction] = split_filename_list(body)
+    matches = list(simple_pattern.finditer(txt))
+    if matches:
+        for m in matches:
+            direction = m.group(1).capitalize()
+            body = m.group(2).strip()
+            result[direction] = split_filename_list(body)
         return result
 
     return result
 
 
 # =========================================================
-# JSON PARSING
+# JSON CELL PARSING
 # =========================================================
 def extract_grouped_files_from_json_name(json_name: str) -> List[str]:
     """
-    Extract files listed in brackets, like:
-      abc (...)(AIM50D02, AIM50D04)
+    Extracts file names from brackets ONLY when brackets are present after json text.
+    Example:
+      abc-json (AIM50D02,AIM50D04)
     """
     matches = re.findall(r"\(([^()]*)\)", json_name)
     files = []
     for m in matches:
-        # only keep bracket groups that look like file names, not random text
         parts = [clean_token(p) for p in m.split(",") if clean_token(p)]
         files.extend(parts)
     return files
@@ -275,7 +290,7 @@ def infer_direction_from_text(text: str) -> str:
 
 def split_json_cell_direction_aware(text: str) -> List[Dict]:
     """
-    Handles cases like:
+    Handles cells like:
 
     Inbound: json_a (AIM50D02,AIM50D04)
     json_b (AIM50D01, AIM50D03)
@@ -283,16 +298,9 @@ def split_json_cell_direction_aware(text: str) -> List[Dict]:
     Outbound: json_d
     json_e
 
-    and also numbered lines:
+    Also handles numbered lines like:
     1. json_a
     2. json_b
-
-    Returns list of dicts:
-      {
-        "json_name": "...",
-        "direction": "Inbound"/"Outbound"/"Unknown",
-        "grouped_files": [...]
-      }
     """
     text = normalize_text(text).replace("\r", "\n")
     if not text:
@@ -305,32 +313,28 @@ def split_json_cell_direction_aware(text: str) -> List[Dict]:
     for line in lines:
         line_wo_num = re.sub(r"^\d+\.\s*", "", line).strip()
 
-        # detect explicit line-level prefix
         explicit_prefix = re.match(r"^(Inbound|Outbound)\s*:\s*(.*)$", line_wo_num, flags=re.IGNORECASE)
         if explicit_prefix:
             current_direction = explicit_prefix.group(1).capitalize()
             remainder = explicit_prefix.group(2).strip()
             if remainder:
-                json_name = remainder
                 results.append(
                     {
-                        "json_name": json_name,
+                        "json_name": remainder,
                         "direction": current_direction,
-                        "grouped_files": extract_grouped_files_from_json_name(json_name),
+                        "grouped_files": extract_grouped_files_from_json_name(remainder),
                     }
                 )
             continue
 
-        # no explicit prefix on this line, inherit current direction
-        json_name = line_wo_num
-        direction_guess = infer_direction_from_text(json_name)
+        direction_guess = infer_direction_from_text(line_wo_num)
         direction = direction_guess if direction_guess != "Unknown" else current_direction
 
         results.append(
             {
-                "json_name": json_name,
+                "json_name": line_wo_num,
                 "direction": direction,
-                "grouped_files": extract_grouped_files_from_json_name(json_name),
+                "grouped_files": extract_grouped_files_from_json_name(line_wo_num),
             }
         )
 
@@ -341,14 +345,12 @@ def tokenize_for_similarity(text: str) -> List[str]:
     t = normalize_text(text).lower()
     t = t.replace(".json", "")
     t = re.sub(r"[^a-z0-9]+", " ", t)
-    tokens = [tok for tok in t.split() if tok and len(tok) > 2]
-    return tokens
+    return [tok for tok in t.split() if tok and len(tok) > 2]
 
 
 def file_json_similarity(file_name: str, json_name: str) -> int:
     f = normalize_text(file_name).lower()
     j = normalize_text(json_name).lower()
-
     score = 0
 
     if f and f in j:
@@ -360,8 +362,7 @@ def file_json_similarity(file_name: str, json_name: str) -> int:
 
     file_tokens = set(tokenize_for_similarity(f))
     json_tokens = set(tokenize_for_similarity(j))
-    overlap = file_tokens.intersection(json_tokens)
-    score += len(overlap) * 3
+    score += len(file_tokens.intersection(json_tokens)) * 3
 
     compact_f = re.sub(r"[^a-z0-9]", "", f_base)
     compact_j = re.sub(r"[^a-z0-9]", "", j)
@@ -397,12 +398,12 @@ def match_files_to_jsons(
 ) -> List[Dict]:
     """
     Matching priority:
-      1. explicit bracketed file mapping
-      2. single json in that direction
-      3. positional match if counts equal
+      1. explicit bracketed file mapping (ONLY if brackets exist after json name)
+      2. single json for that direction
+      3. positional mapping if counts match
       4. heuristic similarity
       5. ambiguous same-direction fallback
-      6. unknown json fallback
+      6. unknown-json fallback
     """
     results = []
 
@@ -412,7 +413,7 @@ def match_files_to_jsons(
 
     explicit_mapped = set()
 
-    # 1. explicit bracketed mapping
+    # 1. Explicit bracket mapping ONLY when grouped_files exists
     for direction, files, jsons in [
         ("Inbound", inbound_files, inbound_jsons),
         ("Outbound", outbound_files, outbound_jsons),
@@ -420,6 +421,9 @@ def match_files_to_jsons(
         normalized_file_lookup = {normalize_compare_token(f): f for f in files}
 
         for jc in jsons:
+            if not jc["grouped_files"]:
+                continue
+
             grouped = [normalize_compare_token(g) for g in jc["grouped_files"]]
             for g in grouped:
                 if g in normalized_file_lookup:
@@ -436,7 +440,6 @@ def match_files_to_jsons(
                     )
                     explicit_mapped.add((direction, normalize_compare_token(original_file)))
 
-    # process each direction
     for direction, files, jsons in [
         ("Inbound", inbound_files, inbound_jsons),
         ("Outbound", outbound_files, outbound_jsons),
@@ -449,7 +452,7 @@ def match_files_to_jsons(
         if not remaining_files:
             continue
 
-        # 2. one json for that direction
+        # 2. exactly one json for that direction -> assign all remaining files to it
         if len(jsons) == 1:
             for f in remaining_files:
                 results.append(
@@ -464,7 +467,7 @@ def match_files_to_jsons(
                 )
             continue
 
-        # 3. equal counts
+        # 3. equal count -> positional mapping
         if len(jsons) == len(remaining_files) and len(jsons) > 1:
             for f, jc in zip(remaining_files, jsons):
                 results.append(
@@ -479,15 +482,14 @@ def match_files_to_jsons(
                 )
             continue
 
-        # 4. heuristic similarity
+        # 4. heuristic similarity when there are multiple candidates in same direction
         if len(jsons) > 1:
             for f in remaining_files:
-                scored = []
-                for jc in jsons:
-                    s = file_json_similarity(f, jc["json_name"])
-                    scored.append((s, jc))
-
-                scored.sort(key=lambda x: x[0], reverse=True)
+                scored = sorted(
+                    [(file_json_similarity(f, jc["json_name"]), jc) for jc in jsons],
+                    key=lambda x: x[0],
+                    reverse=True,
+                )
                 best_score = scored[0][0] if scored else 0
 
                 if best_score >= 8:
@@ -529,7 +531,7 @@ def match_files_to_jsons(
                         )
             continue
 
-        # 5. unknown fallback
+        # 5. no same-direction jsons -> fallback to unknown jsons
         if len(jsons) == 0:
             if len(unknown_jsons) == 1:
                 for f in remaining_files:
@@ -545,51 +547,17 @@ def match_files_to_jsons(
                     )
             elif len(unknown_jsons) > 1:
                 for f in remaining_files:
-                    scored = []
                     for jc in unknown_jsons:
-                        s = file_json_similarity(f, jc["json_name"])
-                        scored.append((s, jc))
-
-                    scored.sort(key=lambda x: x[0], reverse=True)
-                    best_score = scored[0][0] if scored else 0
-
-                    if best_score >= 8:
-                        best_candidates = [jc for s, jc in scored if s == best_score]
-                        if len(best_candidates) == 1:
-                            results.append(
-                                {
-                                    "file_name": f,
-                                    "direction": direction,
-                                    "json_name": best_candidates[0]["json_name"],
-                                    "match_method": "heuristic_unknown_json",
-                                    "match_confidence": "Low",
-                                    "review_required": "Y",
-                                }
-                            )
-                        else:
-                            for jc in best_candidates:
-                                results.append(
-                                    {
-                                        "file_name": f,
-                                        "direction": direction,
-                                        "json_name": jc["json_name"],
-                                        "match_method": "ambiguous_unknown_json",
-                                        "match_confidence": "Low",
-                                        "review_required": "Y",
-                                    }
-                                )
-                    else:
-                        for jc in unknown_jsons:
-                            results.append(
-                                {
-                                    "file_name": f,
-                                    "direction": direction,
-                                    "json_name": jc["json_name"],
-                                    "match_method": "ambiguous_unknown_json",
-                                    "match_confidence": "Low",
-                                    "review_required": "Y",
-                                }
-                            )
+                        results.append(
+                            {
+                                "file_name": f,
+                                "direction": direction,
+                                "json_name": jc["json_name"],
+                                "match_method": "ambiguous_unknown_json",
+                                "match_confidence": "Low",
+                                "review_required": "Y",
+                            }
+                        )
             else:
                 for f in remaining_files:
                     results.append(
@@ -656,7 +624,6 @@ def process_sheet(ws) -> List[Dict[str, str]]:
         inbound_files = parsed_files.get("Inbound", [])
         outbound_files = parsed_files.get("Outbound", [])
 
-        # UPDATED: direction-aware JSON parsing
         json_candidates = split_json_cell_direction_aware(json_cell)
 
         interface_name_out = combine_interface_name(interface_name, frequency)
@@ -715,7 +682,7 @@ def process_sheet(ws) -> List[Dict[str, str]]:
 
 
 # =========================================================
-# OUTPUT WRITING
+# OUTPUT FORMATTING
 # =========================================================
 def auto_fit_columns(ws):
     for col_cells in ws.columns:
@@ -725,6 +692,40 @@ def auto_fit_columns(ws):
             val = "" if cell.value is None else str(cell.value)
             max_length = max(max_length, len(val))
         ws.column_dimensions[col_letter].width = min(max_length + 2, 80)
+
+
+def style_header(ws):
+    for cell in ws[1]:
+        cell.font = Font(bold=True)
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+
+
+def merge_repeated_cells(ws, col_idx: int, start_row: int = 2):
+    """
+    Merge contiguous repeated non-empty values in one column.
+    """
+    max_row = ws.max_row
+    if max_row < start_row:
+        return
+
+    merge_start = start_row
+    current_value = ws.cell(start_row, col_idx).value
+
+    for row in range(start_row + 1, max_row + 1):
+        val = ws.cell(row, col_idx).value
+        if val == current_value and normalize_text(val) != "":
+            continue
+
+        if row - 1 > merge_start and normalize_text(current_value) != "":
+            ws.merge_cells(start_row=merge_start, start_column=col_idx, end_row=row - 1, end_column=col_idx)
+            ws.cell(merge_start, col_idx).alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+
+        merge_start = row
+        current_value = val
+
+    if max_row > merge_start and normalize_text(current_value) != "":
+        ws.merge_cells(start_row=merge_start, start_column=col_idx, end_row=max_row, end_column=col_idx)
+        ws.cell(merge_start, col_idx).alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
 
 
 def write_output(all_rows: List[Dict[str, str]], output_path: str):
@@ -753,6 +754,18 @@ def write_output(all_rows: List[Dict[str, str]], output_path: str):
 
     for row in all_rows:
         ws.append([row.get(h, "") for h in headers])
+
+    style_header(ws)
+
+    # Merge repeated values in Interface Name, IR Thread, JSON Name
+    # Columns:
+    # 1 Priority Bucket
+    # 2 Interface Name
+    # 3 IR Thread
+    # 4 JSON Name
+    merge_repeated_cells(ws, 2)
+    merge_repeated_cells(ws, 3)
+    merge_repeated_cells(ws, 4)
 
     auto_fit_columns(ws)
     wb.save(output_path)
