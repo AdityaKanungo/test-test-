@@ -1,1 +1,322 @@
 
+Great — this is a classic longitudinal + hierarchical dataset, so your EDA should be structured at 3 levels:
+
+1. Person level (long_person_id) → victim journey
+
+
+2. Referral level (referral_id) → events over time
+
+
+3. Allegation level (subcategory_of_abuse) → granular patterns
+
+
+
+Below is a clean, production-ready EDA framework + code tailored to your dataset 👇
+
+
+---
+
+🔷 0. Setup
+
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+df = df.copy()
+
+# convert dates
+date_cols = [
+    'referral_received_date',
+    'incident_begin_date',
+    'incident_end_date',
+    'case_closure_date',
+    'index_referral_received_date'
+]
+
+for col in date_cols:
+    df[col] = pd.to_datetime(df[col], errors='coerce')
+
+
+---
+
+🔷 1. HIGH LEVEL SNAPSHOT
+
+print("Total Rows:", len(df))
+print("Unique Persons:", df['long_person_id'].nunique())
+print("Unique Referrals:", df['referral_id'].nunique())
+print("Unique Allegations:", df['allegation_id'].nunique())
+
+
+---
+
+🔷 2. STRUCTURE UNDERSTANDING (VERY IMPORTANT)
+
+👉 This validates your hierarchy
+
+# referrals per person
+ref_per_person = df.groupby('long_person_id')['referral_id'].nunique()
+
+# allegations per referral
+alleg_per_ref = df.groupby('referral_id')['allegation_id'].nunique()
+
+print(ref_per_person.describe())
+print(alleg_per_ref.describe())
+
+📊 Plot:
+
+sns.histplot(ref_per_person, bins=30)
+plt.title("Referrals per Person")
+plt.show()
+
+sns.histplot(alleg_per_ref, bins=30)
+plt.title("Allegations per Referral")
+plt.show()
+
+
+---
+
+🔷 3. REFERRAL TYPE DISTRIBUTION (GPS vs CPS vs SUP)
+
+ref_type_counts = df[['referral_id','referral_type']].drop_duplicates()['referral_type'].value_counts()
+print(ref_type_counts)
+
+sns.countplot(data=df[['referral_id','referral_type']].drop_duplicates(),
+              x='referral_type')
+plt.title("Referral Type Distribution")
+plt.show()
+
+
+---
+
+🔷 4. TIME TREND ANALYSIS
+
+df['year_month'] = df['referral_received_date'].dt.to_period('M')
+
+trend = df[['referral_id','year_month']].drop_duplicates() \
+        .groupby('year_month').size()
+
+trend.plot(figsize=(12,5), title="Referrals Over Time")
+plt.show()
+
+👉 Split by type:
+
+trend_type = df[['referral_id','year_month','referral_type']].drop_duplicates()
+
+trend_type = trend_type.groupby(['year_month','referral_type']).size().unstack()
+
+trend_type.plot(figsize=(12,5))
+plt.title("Referral Trends by Type")
+plt.show()
+
+
+---
+
+🔷 5. GPS SUBCATEGORY ANALYSIS (VERY IMPORTANT)
+
+Filter only GPS:
+
+gps_df = df[df['referral_type'] == 'GPS']
+
+Distribution
+
+subcat_counts = gps_df['subcategory_of_abuse'].value_counts()
+
+subcat_counts.head(15).plot(kind='barh')
+plt.title("Top GPS Subcategories")
+plt.show()
+
+Multi-subcategory per referral
+
+subcat_per_ref = gps_df.groupby('referral_id')['subcategory_of_abuse'].nunique()
+
+sns.histplot(subcat_per_ref, bins=20)
+plt.title("Subcategories per GPS Referral")
+plt.show()
+
+
+---
+
+🔷 6. PERSON JOURNEY ANALYSIS
+
+How many people have multiple referrals
+
+multi_ref_flag = ref_per_person > 1
+
+print("People with multiple referrals:",
+      multi_ref_flag.mean())
+
+
+---
+
+Sequence of referral types per person
+
+seq_df = df[['long_person_id','referral_id','referral_received_date','referral_type']] \
+            .drop_duplicates() \
+            .sort_values(['long_person_id','referral_received_date'])
+
+# Example: view one journey
+seq_df.groupby('long_person_id')['referral_type'].apply(list).head()
+
+
+---
+
+🔷 7. TRANSITION ANALYSIS (GPS → CPS)
+
+👉 This is CRITICAL for your use case
+
+df_sorted = df[['long_person_id','referral_id','referral_received_date','referral_type']] \
+            .drop_duplicates() \
+            .sort_values(['long_person_id','referral_received_date'])
+
+df_sorted['next_type'] = df_sorted.groupby('long_person_id')['referral_type'].shift(-1)
+
+transition = pd.crosstab(df_sorted['referral_type'], df_sorted['next_type'])
+print(transition)
+
+📊 Heatmap:
+
+sns.heatmap(transition, annot=True, fmt='d', cmap='Blues')
+plt.title("Referral Transition Matrix")
+plt.show()
+
+
+---
+
+🔷 8. TIME BETWEEN REFERRALS
+
+df_sorted['next_date'] = df_sorted.groupby('long_person_id')['referral_received_date'].shift(-1)
+
+df_sorted['days_between'] = (df_sorted['next_date'] - df_sorted['referral_received_date']).dt.days
+
+sns.histplot(df_sorted['days_between'].dropna(), bins=50)
+plt.title("Days Between Referrals")
+plt.show()
+
+
+---
+
+🔷 9. INDEX VS SUBSEQUENT ANALYSIS
+
+index_df = df[df['is_index'] == 'Y']
+
+print("Total Index Cases:", index_df['long_person_id'].nunique())
+
+% with subsequent CPS
+
+subseq_cps = df.groupby('long_person_id')['subseq_CPS_referral_ind'].max()
+
+print("Pct with CPS:", (subseq_cps == 'Y').mean())
+
+
+---
+
+🔷 10. OUTCOME ANALYSIS (CPS)
+
+cps_df = df[df['referral_type'] == 'CPS']
+
+outcome_dist = cps_df['allegation_outcome'].value_counts()
+
+outcome_dist.plot(kind='bar')
+plt.title("CPS Outcomes")
+plt.show()
+
+
+---
+
+🔷 11. PERP ANALYSIS (ADVANCED)
+
+# unique perp per referral
+perp_per_ref = df.groupby('referral_id')['perp_first_name'].nunique()
+
+sns.histplot(perp_per_ref, bins=20)
+plt.title("Perpetrators per Referral")
+plt.show()
+
+
+---
+
+🔷 12. DATA QUALITY CHECKS
+
+# missing values
+missing = df.isnull().mean().sort_values(ascending=False)
+print(missing.head(20))
+
+# duplicates check
+print("Duplicate rows:", df.duplicated().sum())
+
+
+---
+
+🔷 13. KEY INSIGHTS YOU SHOULD EXTRACT (for PPT)
+
+Focus on:
+
+% of children with multiple referrals
+
+GPS → CPS conversion rate
+
+Most common GPS subcategories
+
+Average time between referrals
+
+% cases with repeat perpetrators
+
+Seasonal / yearly trends
+
+Avg allegations per referral
+
+
+
+---
+
+🔥 BONUS (VERY USEFUL FOR YOUR PROJECT)
+
+Create PERSON-LEVEL SUMMARY TABLE
+
+person_summary = df.groupby('long_person_id').agg({
+    'referral_id': 'nunique',
+    'allegation_id': 'nunique',
+    'referral_type': lambda x: list(x),
+    'subseq_CPS_referral_ind': 'max'
+}).reset_index()
+
+person_summary.columns = [
+    'long_person_id',
+    'num_referrals',
+    'num_allegations',
+    'referral_types',
+    'has_CPS'
+]
+
+
+---
+
+💡 HOW TO THINK ABOUT THIS DATA (IMPORTANT)
+
+Your dataset is:
+
+👉 NOT flat 👉 It is event-based longitudinal data
+
+So always analyze:
+
+Level	Meaning
+
+Person	lifecycle
+Referral	event
+Allegation	detail
+
+
+
+---
+
+🚀 If you want next step
+
+I can help you build:
+
+✅ KPI dashboard (ppt ready)
+✅ Survival analysis (GPS → CPS)
+✅ “number of GPS before CPS” logic (your earlier ask)
+✅ Clean feature engineering dataset
+
+Just tell me 👍
