@@ -1,1 +1,910 @@
 
+# ============================================
+# 0. Imports and setup
+# ============================================
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import re
+from collections import Counter
+
+pd.set_option("display.max_columns", 200)
+pd.set_option("display.max_rows", 200)
+pd.set_option("display.max_colwidth", 200)
+
+# Optional: make charts a little larger
+plt.rcParams["figure.figsize"] = (10, 6)
+
+
+# ============================================
+# 1. Load data
+# ============================================
+# Replace with your actual load command
+# df = pd.read_csv("your_file.csv")
+# df = pd.read_parquet("your_file.parquet")
+
+# Example:
+# df = your_dataframe.copy()
+
+df = df.copy()
+
+print("Shape:", df.shape)
+print("\nColumns:")
+print(df.columns.tolist())
+
+
+# ============================================
+# 2. Standardize column names
+# ============================================
+def clean_col(col):
+    col = col.strip().lower()
+    col = re.sub(r"[^\w]+", "_", col)
+    col = re.sub(r"_+", "_", col).strip("_")
+    return col
+
+df.columns = [clean_col(c) for c in df.columns]
+
+print("\nStandardized columns:")
+print(df.columns.tolist())
+
+
+# ============================================
+# 3. Identify key columns based on your screenshot
+# ============================================
+# Adjust if your exact names differ after standardization.
+KEY_COLS = {
+    "person": "long_person_id",
+    "referral": "referral_id",
+    "allegation": "allegation_id",
+    "referral_received_date": "referral_received_date",
+    "incident_begin_date": "incident_begin_date",
+    "incident_end_date": "incident_end_date",
+    "case_closure_date": "case_closure_date",
+    "referral_type": "referral_type",
+    "referral_source": "referral_source",
+    "referral_status": "referral_status",
+    "category_of_abuse": "category_of_abuse",
+    "subcategory_of_abuse": "subcategory_of_abuse",
+    "allegation_outcome": "allegation_outcome",
+    "allegation_validation_status": "allegation_validation_status",
+    "overall_assessment_decision": "overall_assessment_decision",
+    "fatality_indicator": "fatality_indicator",
+    "near_fatality_indicator": "near_fatality_indicator",
+    "accepted_for_services": "accepted_for_services",
+    "service_planned_or_provided": "service_planned_or_provided",
+    "referral_sequence": "referral_sequence",
+    "num_subsequent_referrals": "num_subsequent_referrals",
+    "subseq_gps_referral_ind": "subseq_gps_referral_ind",
+    "num_subseq_gps_referrals": "num_subseq_gps_referrals",
+    "months_to_first_subseq_gps": "months_to_first_subseq_gps",
+    "time_to_first_subseq_gps_bucket": "time_to_first_subseq_gps_bucket",
+    "subseq_cps_referral_ind": "subseq_cps_referral_ind",
+    "num_subseq_cps_referrals": "num_subseq_cps_referrals",
+    "months_to_first_subseq_cps": "months_to_first_subseq_cps",
+    "time_to_first_subseq_cps_bucket": "time_to_first_subseq_cps_bucket",
+    "index_referral_id": "index_referral_id",
+    "index_referral_received_date": "index_referral_received_date",
+    "index_subcategory_of_abuse": "index_subcategory_of_abuse",
+    "is_index": "is_index",
+    "days_since_index_referral": "days_since_index_referral",
+    "time_since_index_referral": "time_since_index_referral",
+    "days_since_previous_referral": "days_since_previous_referral",
+    "time_since_previous_referral": "time_since_previous_referral",
+    "same_gps_subcategory_as_index": "same_gps_subcategory_as_index",
+    "referral_sequence_type": "referral_sequence_type",
+    "perp_relationship": "perp_relationship",
+    "perp_first_name": "perp_first_name",
+    "perp_last_name": "perp_last_name",
+    "perp_date_of_birth": "perp_date_of_birth",
+    "perp_date_of_birth_estimated": "perp_date_of_birth_estimated",
+    "perp_social_security_number": "perp_social_security_number",
+    "perp_reoccurrence_flag": "perp_reoccurrence_flag"
+}
+
+missing_key_cols = [v for v in KEY_COLS.values() if v not in df.columns]
+print("\nMissing expected columns:", missing_key_cols)
+
+
+# ============================================
+# 4. Basic cleaning
+# ============================================
+# Convert obvious blanks to NaN
+df = df.replace(r"^\s*$", np.nan, regex=True)
+
+# Strip whitespace from object columns
+obj_cols = df.select_dtypes(include="object").columns
+for c in obj_cols:
+    df[c] = df[c].astype(str).str.strip()
+    df[c] = df[c].replace({"nan": np.nan, "None": np.nan, "": np.nan})
+
+# Parse dates
+date_cols = [
+    "referral_received_date",
+    "incident_begin_date",
+    "incident_end_date",
+    "case_closure_date",
+    "index_referral_received_date",
+    "perp_date_of_birth"
+]
+
+for c in date_cols:
+    if c in df.columns:
+        df[c] = pd.to_datetime(df[c], errors="coerce")
+
+# Convert likely numeric columns
+numeric_cols = [
+    "referral_sequence",
+    "num_subsequent_referrals",
+    "num_subseq_gps_referrals",
+    "months_to_first_subseq_gps",
+    "num_subseq_cps_referrals",
+    "months_to_first_subseq_cps",
+    "days_since_index_referral",
+    "days_since_previous_referral"
+]
+
+for c in numeric_cols:
+    if c in df.columns:
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+
+print("\nDtypes:")
+print(df.dtypes.sort_index())
+
+
+# ============================================
+# 5. Quick overview
+# ============================================
+print("\nHead:")
+display(df.head())
+
+print("\nDescribe numeric:")
+display(df.describe(include=[np.number]).T)
+
+print("\nDescribe categorical/object:")
+display(df.describe(include=["object"]).T)
+
+
+# ============================================
+# 6. Missingness
+# ============================================
+missing = (
+    df.isna()
+      .mean()
+      .sort_values(ascending=False)
+      .rename("missing_pct")
+      .to_frame()
+)
+missing["missing_count"] = df.isna().sum()
+display(missing)
+
+# Plot top missing columns
+top_missing = missing.head(25).sort_values("missing_pct")
+top_missing["missing_pct"].plot(kind="barh")
+plt.title("Top 25 Columns by Missingness")
+plt.xlabel("Missing %")
+plt.show()
+
+
+# ============================================
+# 7. Unique counts and duplication at raw row level
+# ============================================
+for c in ["long_person_id", "referral_id", "allegation_id"]:
+    if c in df.columns:
+        print(f"{c}: {df[c].nunique(dropna=True):,} unique")
+
+print("\nRaw duplicate rows:", df.duplicated().sum())
+
+# Duplicate rows by key triplets
+candidate_keys = [
+    ["long_person_id", "referral_id", "allegation_id"],
+    ["long_person_id", "referral_id"],
+    ["referral_id", "allegation_id"]
+]
+
+for keys in candidate_keys:
+    keys = [k for k in keys if k in df.columns]
+    if keys:
+        dupes = df.duplicated(subset=keys).sum()
+        print(f"Duplicates for {keys}: {dupes:,}")
+
+
+# ============================================
+# 8. Create helper entity keys
+# ============================================
+# Since no perp_id exists, build a perpetrator fingerprint.
+# SSN is sensitive, so use it only if present, else use name+dob.
+def normalize_text(s):
+    if pd.isna(s):
+        return np.nan
+    s = str(s).strip().lower()
+    s = re.sub(r"\s+", " ", s)
+    return s
+
+for c in ["perp_first_name", "perp_last_name", "perp_relationship", "perp_social_security_number"]:
+    if c in df.columns:
+        df[c] = df[c].apply(normalize_text)
+
+if "perp_social_security_number" in df.columns:
+    df["perp_ssn_last4"] = df["perp_social_security_number"].astype(str).str[-4:]
+else:
+    df["perp_ssn_last4"] = np.nan
+
+def build_perp_key(row):
+    # Priority 1: SSN if present
+    if pd.notna(row.get("perp_social_security_number")) and row.get("perp_social_security_number") != "nan":
+        return f"ssn::{row['perp_social_security_number']}"
+    # Priority 2: name + dob
+    fn = row.get("perp_first_name")
+    ln = row.get("perp_last_name")
+    dob = row.get("perp_date_of_birth")
+    if pd.notna(fn) or pd.notna(ln) or pd.notna(dob):
+        dob_str = dob.strftime("%Y-%m-%d") if pd.notna(dob) else "missingdob"
+        return f"name_dob::{fn}|{ln}|{dob_str}"
+    return np.nan
+
+df["perp_key"] = df.apply(build_perp_key, axis=1)
+
+# Referral-level unique row marker
+referral_keys = [c for c in ["long_person_id", "referral_id"] if c in df.columns]
+allegation_keys = [c for c in ["referral_id", "allegation_id"] if c in df.columns]
+
+
+# ============================================
+# 9. Build normalized views for person/referral/allegation/perp
+# ============================================
+# Person-level
+person_df = (
+    df[["long_person_id"]]
+    .drop_duplicates()
+    .reset_index(drop=True)
+    if "long_person_id" in df.columns else pd.DataFrame()
+)
+
+# Referral-level: collapse identical referral attributes across rows
+referral_level_cols = [c for c in df.columns if c not in [
+    "allegation_id",
+    "category_of_abuse",
+    "subcategory_of_abuse",
+    "allegation_outcome",
+    "allegation_validation_status",
+    "perp_relationship",
+    "perp_first_name",
+    "perp_last_name",
+    "perp_date_of_birth",
+    "perp_date_of_birth_estimated",
+    "perp_social_security_number",
+    "perp_ssn_last4",
+    "perp_key",
+    "perp_reoccurrence_flag"
+]]
+
+referral_df = (
+    df[referral_level_cols]
+    .drop_duplicates(subset=["referral_id"])
+    .copy()
+    if "referral_id" in df.columns else pd.DataFrame()
+)
+
+# Allegation-level
+allegation_level_cols = [c for c in [
+    "referral_id", "allegation_id", "category_of_abuse", "subcategory_of_abuse",
+    "allegation_outcome", "allegation_validation_status"
+] if c in df.columns]
+
+allegation_df = (
+    df[allegation_level_cols]
+    .drop_duplicates()
+    .copy()
+    if set(["referral_id", "allegation_id"]).issubset(df.columns) else pd.DataFrame()
+)
+
+# Perp-level within referral
+perp_level_cols = [c for c in [
+    "referral_id", "perp_key", "perp_relationship", "perp_first_name", "perp_last_name",
+    "perp_date_of_birth", "perp_date_of_birth_estimated", "perp_social_security_number",
+    "perp_ssn_last4", "perp_reoccurrence_flag"
+] if c in df.columns]
+
+perp_df = (
+    df[perp_level_cols]
+    .drop_duplicates()
+    .copy()
+    if "referral_id" in df.columns else pd.DataFrame()
+)
+
+print("\nEntity table sizes:")
+print("person_df:", person_df.shape)
+print("referral_df:", referral_df.shape)
+print("allegation_df:", allegation_df.shape)
+print("perp_df:", perp_df.shape)
+
+
+# ============================================
+# 10. Hierarchy checks
+# ============================================
+# A. referrals per long_person_id
+if set(["long_person_id", "referral_id"]).issubset(df.columns):
+    referrals_per_person = (
+        df.groupby("long_person_id")["referral_id"]
+          .nunique()
+          .rename("n_referrals")
+          .reset_index()
+    )
+    print("\nReferrals per person summary:")
+    display(referrals_per_person["n_referrals"].describe())
+
+    referrals_per_person["n_referrals"].plot(kind="hist", bins=30)
+    plt.title("Distribution of Number of Referrals per long_person_id")
+    plt.xlabel("Number of referrals")
+    plt.show()
+
+# B. allegations per referral
+if set(["referral_id", "allegation_id"]).issubset(df.columns):
+    allegations_per_referral = (
+        df.groupby("referral_id")["allegation_id"]
+          .nunique()
+          .rename("n_allegations")
+          .reset_index()
+    )
+    print("\nAllegations per referral summary:")
+    display(allegations_per_referral["n_allegations"].describe())
+
+    allegations_per_referral["n_allegations"].plot(kind="hist", bins=30)
+    plt.title("Distribution of Number of Allegations per Referral")
+    plt.xlabel("Number of allegations")
+    plt.show()
+
+# C. perps per referral
+if set(["referral_id", "perp_key"]).issubset(df.columns):
+    perps_per_referral = (
+        perp_df.dropna(subset=["perp_key"])
+               .groupby("referral_id")["perp_key"]
+               .nunique()
+               .rename("n_perps")
+               .reset_index()
+    )
+    print("\nPerpetrators per referral summary:")
+    display(perps_per_referral["n_perps"].describe())
+
+    perps_per_referral["n_perps"].plot(kind="hist", bins=30)
+    plt.title("Distribution of Number of Perpetrators per Referral")
+    plt.xlabel("Number of perpetrators")
+    plt.show()
+
+# D. rows per referral in raw file
+if "referral_id" in df.columns:
+    rows_per_referral = (
+        df.groupby("referral_id")
+          .size()
+          .rename("n_raw_rows")
+          .reset_index()
+    )
+    print("\nRaw rows per referral summary:")
+    display(rows_per_referral["n_raw_rows"].describe())
+
+
+# ============================================
+# 11. Detect possible row explosion from allegation x perp cross-product
+# ============================================
+# Sometimes one referral with multiple allegations and multiple perps is represented
+# as a Cartesian-like expansion in the raw data.
+if "referral_id" in df.columns:
+    tmp = df.copy()
+
+    agg_parts = {}
+    if "allegation_id" in tmp.columns:
+        agg_parts["n_allegations"] = ("allegation_id", pd.Series.nunique)
+    if "perp_key" in tmp.columns:
+        agg_parts["n_perps"] = ("perp_key", pd.Series.nunique)
+
+    agg_parts["n_rows"] = ("referral_id", "size")
+
+    referral_complexity = tmp.groupby("referral_id").agg(**agg_parts).reset_index()
+
+    if set(["n_allegations", "n_perps"]).issubset(referral_complexity.columns):
+        referral_complexity["allegation_x_perp"] = (
+            referral_complexity["n_allegations"].fillna(0) *
+            referral_complexity["n_perps"].fillna(0)
+        )
+        referral_complexity["row_explosion_ratio"] = (
+            referral_complexity["n_rows"] / referral_complexity["allegation_x_perp"].replace(0, np.nan)
+        )
+        print("\nReferral complexity sample:")
+        display(referral_complexity.head())
+
+        print("\nCases where raw rows may reflect allegation x perp combinations:")
+        display(
+            referral_complexity.sort_values("n_rows", ascending=False).head(20)
+        )
+
+
+# ============================================
+# 12. Consistency checks within referral
+# ============================================
+# Some columns should probably be constant within a referral.
+expected_constant_within_referral = [
+    "long_person_id", "referral_received_date", "referral_type", "referral_source",
+    "referral_status", "incident_begin_date", "incident_end_date",
+    "overall_assessment_decision", "fatality_indicator", "near_fatality_indicator",
+    "case_closure_date", "case_closure_reason", "accepted_for_services",
+    "service_planned_or_provided", "referral_sequence", "is_index"
+]
+
+expected_constant_within_referral = [c for c in expected_constant_within_referral if c in df.columns]
+
+consistency_results = []
+if "referral_id" in df.columns:
+    for c in expected_constant_within_referral:
+        temp = df.groupby("referral_id")[c].nunique(dropna=True)
+        inconsistent_count = (temp > 1).sum()
+        consistency_results.append({
+            "column": c,
+            "referrals_with_multiple_values": int(inconsistent_count),
+            "pct_of_referrals": inconsistent_count / df["referral_id"].nunique()
+        })
+
+consistency_df = pd.DataFrame(consistency_results).sort_values(
+    "referrals_with_multiple_values", ascending=False
+)
+print("\nReferral-level consistency check:")
+display(consistency_df)
+
+
+# ============================================
+# 13. Person-level longitudinal EDA
+# ============================================
+if set(["long_person_id", "referral_id", "referral_received_date"]).issubset(df.columns):
+    person_referrals = (
+        df[["long_person_id", "referral_id", "referral_received_date"]]
+        .drop_duplicates()
+        .sort_values(["long_person_id", "referral_received_date", "referral_id"])
+        .copy()
+    )
+
+    person_referrals["referral_order_computed"] = (
+        person_referrals.groupby("long_person_id").cumcount() + 1
+    )
+
+    person_referrals["previous_referral_date_computed"] = (
+        person_referrals.groupby("long_person_id")["referral_received_date"].shift(1)
+    )
+
+    person_referrals["days_since_prev_computed"] = (
+        person_referrals["referral_received_date"] - person_referrals["previous_referral_date_computed"]
+    ).dt.days
+
+    print("\nPerson referral trajectory sample:")
+    display(person_referrals.head(20))
+
+    if "referral_sequence" in df.columns:
+        seq_compare = (
+            person_referrals.merge(
+                df[["referral_id", "referral_sequence"]].drop_duplicates("referral_id"),
+                on="referral_id",
+                how="left"
+            )
+        )
+        seq_mismatch = seq_compare[
+            pd.to_numeric(seq_compare["referral_sequence"], errors="coerce") !=
+            pd.to_numeric(seq_compare["referral_order_computed"], errors="coerce")
+        ]
+        print(f"\nReferral sequence mismatches: {len(seq_mismatch):,}")
+        display(seq_mismatch.head(20))
+
+    person_referrals["days_since_prev_computed"].dropna().plot(kind="hist", bins=50)
+    plt.title("Days Between Referrals for Same long_person_id")
+    plt.xlabel("Days")
+    plt.show()
+
+
+# ============================================
+# 14. Referral date EDA
+# ============================================
+if "referral_received_date" in referral_df.columns:
+    referral_df["referral_year"] = referral_df["referral_received_date"].dt.year
+    referral_df["referral_month"] = referral_df["referral_received_date"].dt.to_period("M").astype(str)
+
+    yearly = referral_df["referral_year"].value_counts(dropna=False).sort_index()
+    monthly = referral_df["referral_month"].value_counts(dropna=False).sort_index()
+
+    print("\nReferrals by year:")
+    display(yearly.to_frame("count"))
+
+    yearly.plot(marker="o")
+    plt.title("Referrals Over Time by Year")
+    plt.xlabel("Year")
+    plt.ylabel("Count")
+    plt.show()
+
+    # Monthly can be noisy if long history
+    monthly.tail(36).plot(marker="o")
+    plt.title("Recent Monthly Referrals (last 36 months in sorted index)")
+    plt.xlabel("Month")
+    plt.ylabel("Count")
+    plt.xticks(rotation=45)
+    plt.show()
+
+
+# ============================================
+# 15. Referral-level categorical distributions
+# ============================================
+referral_cat_cols = [
+    "referral_type", "referral_source", "referral_status",
+    "overall_assessment_decision", "accepted_for_services",
+    "service_planned_or_provided", "fatality_indicator",
+    "near_fatality_indicator", "case_closure_reason", "referral_sequence_type",
+    "is_index"
+]
+
+for c in referral_cat_cols:
+    if c in referral_df.columns:
+        print(f"\nValue counts: {c}")
+        vc = referral_df[c].value_counts(dropna=False).head(25)
+        display(vc.to_frame("count"))
+
+        vc.sort_values().plot(kind="barh")
+        plt.title(f"{c} distribution")
+        plt.xlabel("Count")
+        plt.show()
+
+
+# ============================================
+# 16. Allegation-level EDA
+# ============================================
+if not allegation_df.empty:
+    for c in ["category_of_abuse", "subcategory_of_abuse", "allegation_outcome", "allegation_validation_status"]:
+        if c in allegation_df.columns:
+            print(f"\nAllegation-level value counts: {c}")
+            vc = allegation_df[c].value_counts(dropna=False).head(30)
+            display(vc.to_frame("count"))
+
+            vc.sort_values().plot(kind="barh")
+            plt.title(f"{c} distribution (allegation-level)")
+            plt.xlabel("Count")
+            plt.show()
+
+    # Top categories x subcategories
+    if set(["category_of_abuse", "subcategory_of_abuse"]).issubset(allegation_df.columns):
+        cat_sub = (
+            allegation_df.groupby(["category_of_abuse", "subcategory_of_abuse"])
+                         .size()
+                         .rename("count")
+                         .reset_index()
+                         .sort_values("count", ascending=False)
+        )
+        print("\nTop category/subcategory combinations:")
+        display(cat_sub.head(30))
+
+
+# ============================================
+# 17. Perpetrator EDA
+# ============================================
+if not perp_df.empty:
+    for c in ["perp_relationship", "perp_reoccurrence_flag", "perp_date_of_birth_estimated"]:
+        if c in perp_df.columns:
+            print(f"\nPerpetrator-level value counts: {c}")
+            vc = perp_df[c].value_counts(dropna=False).head(30)
+            display(vc.to_frame("count"))
+
+            vc.sort_values().plot(kind="barh")
+            plt.title(f"{c} distribution (perpetrator-level)")
+            plt.xlabel("Count")
+            plt.show()
+
+    # Repeated perpetrators across referrals
+    if set(["perp_key", "referral_id"]).issubset(perp_df.columns):
+        perp_referral_counts = (
+            perp_df.dropna(subset=["perp_key"])
+                  .groupby("perp_key")["referral_id"]
+                  .nunique()
+                  .rename("n_referrals_linked")
+                  .reset_index()
+                  .sort_values("n_referrals_linked", ascending=False)
+        )
+        print("\nPerpetrators linked to multiple referrals:")
+        display(perp_referral_counts.head(20))
+
+        perp_referral_counts["n_referrals_linked"].plot(kind="hist", bins=30)
+        plt.title("How Many Referrals Are Linked to Same Perpetrator")
+        plt.xlabel("Number of referrals")
+        plt.show()
+
+
+# ============================================
+# 18. Referral severity / outcome EDA
+# ============================================
+severity_cols = [
+    "fatality_indicator",
+    "near_fatality_indicator",
+    "overall_assessment_decision",
+    "allegation_outcome",
+    "allegation_validation_status"
+]
+
+# Crosstab: referral source vs assessment
+if set(["referral_source", "overall_assessment_decision"]).issubset(referral_df.columns):
+    ct = pd.crosstab(
+        referral_df["referral_source"],
+        referral_df["overall_assessment_decision"],
+        normalize="index"
+    )
+    print("\nReferral source vs overall assessment decision (row %):")
+    display(ct.round(3))
+
+# Crosstab: referral type vs services
+if set(["referral_type", "accepted_for_services"]).issubset(referral_df.columns):
+    ct = pd.crosstab(
+        referral_df["referral_type"],
+        referral_df["accepted_for_services"],
+        normalize="index"
+    )
+    print("\nReferral type vs accepted for services (row %):")
+    display(ct.round(3))
+
+# Allegation subcategory vs outcome
+if set(["subcategory_of_abuse", "allegation_outcome"]).issubset(allegation_df.columns):
+    top_subcats = allegation_df["subcategory_of_abuse"].value_counts().head(15).index
+    temp = allegation_df[allegation_df["subcategory_of_abuse"].isin(top_subcats)]
+    ct = pd.crosstab(temp["subcategory_of_abuse"], temp["allegation_outcome"], normalize="index")
+    print("\nTop allegation subcategories vs allegation outcome (row %):")
+    display(ct.round(3))
+
+
+# ============================================
+# 19. Index referral and subsequent referral EDA
+# ============================================
+subsequent_cols = [
+    "num_subsequent_referrals",
+    "subseq_gps_referral_ind",
+    "num_subseq_gps_referrals",
+    "months_to_first_subseq_gps",
+    "time_to_first_subseq_gps_bucket",
+    "subseq_cps_referral_ind",
+    "num_subseq_cps_referrals",
+    "months_to_first_subseq_cps",
+    "time_to_first_subseq_cps_bucket",
+    "same_gps_subcategory_as_index"
+]
+
+existing_sub_cols = [c for c in subsequent_cols if c in referral_df.columns]
+
+if existing_sub_cols:
+    print("\nSubsequent referral metrics summary:")
+    display(referral_df[existing_sub_cols].describe(include="all").T)
+
+# Focus on index referrals only
+if "is_index" in referral_df.columns:
+    index_df = referral_df[referral_df["is_index"].astype(str).str.lower().isin(["1", "true", "yes", "y"])].copy()
+    print("\nIndex referral count:", len(index_df))
+
+    if "num_subsequent_referrals" in index_df.columns:
+        index_df["num_subsequent_referrals"].plot(kind="hist", bins=30)
+        plt.title("Number of Subsequent Referrals for Index Referrals")
+        plt.xlabel("num_subsequent_referrals")
+        plt.show()
+
+    for c in [
+        "subseq_gps_referral_ind", "subseq_cps_referral_ind",
+        "time_to_first_subseq_gps_bucket", "time_to_first_subseq_cps_bucket",
+        "same_gps_subcategory_as_index"
+    ]:
+        if c in index_df.columns:
+            print(f"\nIndex referral value counts: {c}")
+            display(index_df[c].value_counts(dropna=False).to_frame("count"))
+
+# Index subcategory vs future CPS/GPS indicators
+if set(["index_subcategory_of_abuse", "subseq_cps_referral_ind"]).issubset(referral_df.columns):
+    top_idx_subcats = referral_df["index_subcategory_of_abuse"].value_counts().head(20).index
+    temp = referral_df[referral_df["index_subcategory_of_abuse"].isin(top_idx_subcats)]
+    ct = pd.crosstab(temp["index_subcategory_of_abuse"], temp["subseq_cps_referral_ind"], normalize="index")
+    print("\nIndex subcategory vs subsequent CPS referral indicator:")
+    display(ct.round(3))
+
+if set(["index_subcategory_of_abuse", "subseq_gps_referral_ind"]).issubset(referral_df.columns):
+    top_idx_subcats = referral_df["index_subcategory_of_abuse"].value_counts().head(20).index
+    temp = referral_df[referral_df["index_subcategory_of_abuse"].isin(top_idx_subcats)]
+    ct = pd.crosstab(temp["index_subcategory_of_abuse"], temp["subseq_gps_referral_ind"], normalize="index")
+    print("\nIndex subcategory vs subsequent GPS referral indicator:")
+    display(ct.round(3))
+
+
+# ============================================
+# 20. Time to subsequent referral EDA
+# ============================================
+for c in ["months_to_first_subseq_gps", "months_to_first_subseq_cps", "days_since_index_referral", "days_since_previous_referral"]:
+    if c in referral_df.columns:
+        print(f"\nSummary for {c}")
+        display(referral_df[c].describe())
+
+        referral_df[c].dropna().plot(kind="hist", bins=40)
+        plt.title(f"Distribution of {c}")
+        plt.xlabel(c)
+        plt.show()
+
+
+# ============================================
+# 21. Child trajectory summaries
+# ============================================
+if set(["long_person_id", "referral_id"]).issubset(df.columns):
+    child_summary = (
+        df.groupby("long_person_id")
+          .agg(
+              n_referrals=("referral_id", "nunique"),
+              n_allegations=("allegation_id", pd.Series.nunique) if "allegation_id" in df.columns else ("referral_id", "size")
+          )
+          .reset_index()
+    )
+
+    if "referral_id" in df.columns and "perp_key" in df.columns:
+        child_perps = (
+            df.groupby("long_person_id")["perp_key"]
+              .nunique(dropna=True)
+              .rename("n_unique_perps")
+              .reset_index()
+        )
+        child_summary = child_summary.merge(child_perps, on="long_person_id", how="left")
+
+    print("\nChild-level summary:")
+    display(child_summary.describe(include="all").T)
+
+    child_summary["n_referrals"].plot(kind="hist", bins=30)
+    plt.title("Child-Level: Number of Referrals")
+    plt.xlabel("n_referrals")
+    plt.show()
+
+    if "n_unique_perps" in child_summary.columns:
+        child_summary["n_unique_perps"].plot(kind="hist", bins=30)
+        plt.title("Child-Level: Number of Unique Perpetrators")
+        plt.xlabel("n_unique_perps")
+        plt.show()
+
+
+# ============================================
+# 22. Relationship between number of allegations and outcomes
+# ============================================
+if not allegation_df.empty and "referral_id" in referral_df.columns:
+    allegations_per_referral = (
+        allegation_df.groupby("referral_id")["allegation_id"]
+                     .nunique()
+                     .rename("n_allegations")
+                     .reset_index()
+    )
+    referral_plus = referral_df.merge(allegations_per_referral, on="referral_id", how="left")
+    referral_plus["n_allegations"] = referral_plus["n_allegations"].fillna(0)
+
+    if "overall_assessment_decision" in referral_plus.columns:
+        summary = (
+            referral_plus.groupby("overall_assessment_decision")["n_allegations"]
+                         .describe()
+        )
+        print("\nNumber of allegations by overall assessment decision:")
+        display(summary)
+
+    if "accepted_for_services" in referral_plus.columns:
+        summary = (
+            referral_plus.groupby("accepted_for_services")["n_allegations"]
+                         .describe()
+        )
+        print("\nNumber of allegations by accepted_for_services:")
+        display(summary)
+
+
+# ============================================
+# 23. Relationship between number of perps and outcomes
+# ============================================
+if not perp_df.empty and "referral_id" in referral_df.columns:
+    perps_per_referral = (
+        perp_df.groupby("referral_id")["perp_key"]
+               .nunique(dropna=True)
+               .rename("n_perps")
+               .reset_index()
+    )
+    referral_plus2 = referral_df.merge(perps_per_referral, on="referral_id", how="left")
+    referral_plus2["n_perps"] = referral_plus2["n_perps"].fillna(0)
+
+    if "overall_assessment_decision" in referral_plus2.columns:
+        summary = (
+            referral_plus2.groupby("overall_assessment_decision")["n_perps"]
+                          .describe()
+        )
+        print("\nNumber of perps by overall assessment decision:")
+        display(summary)
+
+    if "accepted_for_services" in referral_plus2.columns:
+        summary = (
+            referral_plus2.groupby("accepted_for_services")["n_perps"]
+                          .describe()
+        )
+        print("\nNumber of perps by accepted_for_services:")
+        display(summary)
+
+
+# ============================================
+# 24. Top repeat patterns
+# ============================================
+# A. most common subcategories among repeat-referral children
+if set(["long_person_id", "referral_id", "subcategory_of_abuse"]).issubset(df.columns):
+    repeat_children = referrals_per_person.loc[referrals_per_person["n_referrals"] > 1, "long_person_id"]
+    temp = df[df["long_person_id"].isin(repeat_children)]
+
+    print("\nTop subcategories among children with multiple referrals:")
+    display(temp["subcategory_of_abuse"].value_counts(dropna=False).head(25).to_frame("count"))
+
+# B. same GPS subcategory as index
+if "same_gps_subcategory_as_index" in referral_df.columns:
+    print("\nsame_gps_subcategory_as_index distribution:")
+    display(referral_df["same_gps_subcategory_as_index"].value_counts(dropna=False).to_frame("count"))
+
+
+# ============================================
+# 25. Data quality report
+# ============================================
+quality_issues = {}
+
+# Missing keys
+for c in ["long_person_id", "referral_id"]:
+    if c in df.columns:
+        quality_issues[f"missing_{c}"] = int(df[c].isna().sum())
+
+if "referral_id" in df.columns:
+    quality_issues["duplicate_referral_ids_in_referral_df"] = int(referral_df["referral_id"].duplicated().sum())
+
+if set(["referral_id", "allegation_id"]).issubset(allegation_df.columns):
+    quality_issues["duplicate_referral_allegation_pairs"] = int(
+        allegation_df.duplicated(subset=["referral_id", "allegation_id"]).sum()
+    )
+
+if set(["referral_id", "perp_key"]).issubset(perp_df.columns):
+    quality_issues["duplicate_referral_perp_pairs"] = int(
+        perp_df.duplicated(subset=["referral_id", "perp_key"]).sum()
+    )
+
+# Date issues
+if set(["incident_begin_date", "incident_end_date"]).issubset(df.columns):
+    quality_issues["incident_begin_after_end"] = int(
+        ((df["incident_begin_date"] > df["incident_end_date"]) &
+         df["incident_begin_date"].notna() &
+         df["incident_end_date"].notna()).sum()
+    )
+
+if set(["referral_received_date", "case_closure_date"]).issubset(df.columns):
+    quality_issues["referral_after_case_closure"] = int(
+        ((df["referral_received_date"] > df["case_closure_date"]) &
+         df["referral_received_date"].notna() &
+         df["case_closure_date"].notna()).sum()
+    )
+
+quality_report = pd.DataFrame.from_dict(quality_issues, orient="index", columns=["count"])
+print("\nData quality report:")
+display(quality_report)
+
+
+# ============================================
+# 26. Optional: export normalized tables
+# ============================================
+# person_df.to_csv("person_level.csv", index=False)
+# referral_df.to_csv("referral_level.csv", index=False)
+# allegation_df.to_csv("allegation_level.csv", index=False)
+# perp_df.to_csv("perp_level.csv", index=False)
+
+
+# ============================================
+# 27. Suggested "analysis-ready" modeling table
+# ============================================
+# One row per referral, enriched with counts of allegations and perps.
+if "referral_id" in referral_df.columns:
+    referral_features = referral_df.copy()
+
+    if not allegation_df.empty:
+        allegation_counts = allegation_df.groupby("referral_id")["allegation_id"].nunique().rename("n_allegations").reset_index()
+        referral_features = referral_features.merge(allegation_counts, on="referral_id", how="left")
+
+    if not perp_df.empty:
+        perp_counts = perp_df.groupby("referral_id")["perp_key"].nunique(dropna=True).rename("n_perps").reset_index()
+        referral_features = referral_features.merge(perp_counts, on="referral_id", how="left")
+
+    referral_features["n_allegations"] = referral_features.get("n_allegations", pd.Series(index=referral_features.index)).fillna(0)
+    referral_features["n_perps"] = referral_features.get("n_perps", pd.Series(index=referral_features.index)).fillna(0)
+
+    print("\nReferral features table shape:", referral_features.shape)
+    display(referral_features.head())
