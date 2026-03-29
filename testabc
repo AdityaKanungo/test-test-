@@ -1,1 +1,92 @@
+import pandas as pd
+import numpy as np
 
+# ----------------------------
+# 1. Prep date columns
+# ----------------------------
+x = x.copy()
+df_main = df_main.copy()
+
+x['DOB'] = pd.to_datetime(x['DOB'], errors='coerce')
+df_main['DOB'] = pd.to_datetime(df_main['DOB'], errors='coerce')
+
+# ----------------------------
+# 2. Function to split ; separated values
+# ----------------------------
+def split_to_list(val):
+    if pd.isna(val):
+        return []
+    val = str(val).strip()
+    if val == "":
+        return []
+    return [v.strip() for v in val.split(';') if v.strip() != ""]
+
+# ----------------------------
+# 3. Split both matched columns into lists
+# ----------------------------
+x['likely_matched_referral_ids_list'] = x['likely_matched_referral_ids'].apply(split_to_list)
+x['likely_matched_person_ids_list'] = x['likely_matched_person_ids'].apply(split_to_list)
+
+# ----------------------------
+# 4. Make sure pairs stay aligned
+#    Example:
+#    referral_ids = [a,b,c]
+#    person_ids   = [x,y,z]
+#    --> (a,x), (b,y), (c,z)
+# ----------------------------
+def make_pairs(row):
+    refs = row['likely_matched_referral_ids_list']
+    persons = row['likely_matched_person_ids_list']
+    
+    # keep only up to minimum length so pairing does not break
+    n = min(len(refs), len(persons))
+    return list(zip(refs[:n], persons[:n]))
+
+x['matched_pairs'] = x.apply(make_pairs, axis=1)
+
+# ----------------------------
+# 5. Explode paired values
+# ----------------------------
+x_expanded = x.explode('matched_pairs').copy()
+
+# remove rows where no pair exists
+x_expanded = x_expanded[x_expanded['matched_pairs'].notna()].copy()
+
+x_expanded[['likely_matched_referral_ids', 'likely_matched_person_ids']] = pd.DataFrame(
+    x_expanded['matched_pairs'].tolist(),
+    index=x_expanded.index
+)
+
+# ----------------------------
+# 6. Convert IDs to numeric
+# ----------------------------
+x_expanded['likely_matched_referral_ids'] = pd.to_numeric(
+    x_expanded['likely_matched_referral_ids'], errors='coerce'
+)
+x_expanded['likely_matched_person_ids'] = pd.to_numeric(
+    x_expanded['likely_matched_person_ids'], errors='coerce'
+)
+
+df_main['referral_id'] = pd.to_numeric(df_main['referral_id'], errors='coerce')
+df_main['person_id'] = pd.to_numeric(df_main['person_id'], errors='coerce')
+
+# ----------------------------
+# 7. Merge using exploded matched pairs
+# ----------------------------
+merged = x_expanded.merge(
+    df_main,
+    left_on=['likely_matched_referral_ids', 'likely_matched_person_ids'],
+    right_on=['referral_id', 'person_id'],
+    how='left',
+    suffixes=('_x', '_y')
+)
+
+# ----------------------------
+# 8. DOB comparison
+# ----------------------------
+merged['dob_within_365_days'] = (
+    (merged['DOB_x'] - merged['DOB_y']).abs().dt.days <= 365
+)
+
+# view result
+merged[['likely_matched_referral_ids', 'likely_matched_person_ids', 'DOB_x', 'DOB_y', 'dob_within_365_days']]
