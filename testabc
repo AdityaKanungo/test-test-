@@ -14,68 +14,91 @@ def split_semicolon_values(x):
 
 
 # ----------------------------
-# make a working copy
+# copies
 # ----------------------------
 df_long = df_long.copy()
 z = z.copy()
 
-# optional: make sure is_matched exists
+# make sure is_matched exists
 if "is_matched" not in df_long.columns:
     df_long["is_matched"] = False
 
 # ----------------------------
-# build row-wise pairs from z
-# each referral id and person id at the same position belong together
+# build all rows that need updating / matching
 # ----------------------------
-pairs = []
+update_rows = []
+source_rows = []
 
 for _, row in z.iterrows():
     long_person_id_x = row["LONG_PERSON_ID_x"]
     referral_id_x = row["referral_id_x"]
     person_id_x = row["person_id_x"]
 
+    # source row itself should be marked matched
+    source_rows.append({
+        "referral_id": referral_id_x,
+        "person_id": person_id_x
+    })
+
+    # likely matched rows should get LONG_PERSON_ID_x and be marked matched
     ref_list = split_semicolon_values(row["likely_matched_referral_ids"])
     per_list = split_semicolon_values(row["likely_matched_person_ids"])
 
-    # only pair values positionally
+    # positional pairing
     n = min(len(ref_list), len(per_list))
 
     for i in range(n):
-        pairs.append({
-            "source_LONG_PERSON_ID": long_person_id_x,
-            "source_referral_id": referral_id_x,
-            "source_person_id": person_id_x,
-            "target_referral_id": ref_list[i],
-            "target_person_id": per_list[i]
+        update_rows.append({
+            "referral_id": ref_list[i],
+            "person_id": per_list[i],
+            "LONG_PERSON_ID_new": long_person_id_x
         })
 
-pairs_df = pd.DataFrame(pairs)
+update_df = pd.DataFrame(update_rows)
+source_df = pd.DataFrame(source_rows)
 
 # ----------------------------
-# align dtypes with df_long so matching works properly
+# align dtypes for matching
 # ----------------------------
-if not pairs_df.empty:
-    pairs_df["target_referral_id"] = pairs_df["target_referral_id"].astype(df_long["referral_id"].dtype)
-    pairs_df["target_person_id"] = pairs_df["target_person_id"].astype(df_long["person_id"].dtype)
+if not update_df.empty:
+    update_df["referral_id"] = update_df["referral_id"].astype(df_long["referral_id"].dtype)
+    update_df["person_id"] = update_df["person_id"].astype(df_long["person_id"].dtype)
 
-    # create lookup from target referral/person -> LONG_PERSON_ID_x
-    update_map = pairs_df[["target_referral_id", "target_person_id", "source_LONG_PERSON_ID"]].drop_duplicates()
+if not source_df.empty:
+    source_df["referral_id"] = source_df["referral_id"].astype(df_long["referral_id"].dtype)
+    source_df["person_id"] = source_df["person_id"].astype(df_long["person_id"].dtype)
 
-    # merge into df_long
+# ----------------------------
+# update likely matched rows:
+# set LONG_PERSON_ID and is_matched = True
+# ----------------------------
+if not update_df.empty:
+    # remove duplicate target keys if any
+    update_df = update_df.drop_duplicates(subset=["referral_id", "person_id"])
+
     df_long = df_long.merge(
-        update_map,
+        update_df,
         how="left",
-        left_on=["referral_id", "person_id"],
-        right_on=["target_referral_id", "target_person_id"]
+        on=["referral_id", "person_id"]
     )
 
-    # update LONG_PERSON_ID and is_matched where a match is found
-    mask = df_long["source_LONG_PERSON_ID"].notna()
+    mask_update = df_long["LONG_PERSON_ID_new"].notna()
+    df_long.loc[mask_update, "LONG_PERSON_ID"] = df_long.loc[mask_update, "LONG_PERSON_ID_new"]
+    df_long.loc[mask_update, "is_matched"] = True
 
-    df_long.loc[mask, "LONG_PERSON_ID"] = df_long.loc[mask, "source_LONG_PERSON_ID"]
-    df_long.loc[mask, "is_matched"] = True
+    df_long.drop(columns=["LONG_PERSON_ID_new"], inplace=True)
 
-    # drop helper columns
-    df_long = df_long.drop(columns=["target_referral_id", "target_person_id", "source_LONG_PERSON_ID"])
+# ----------------------------
+# mark source rows (referral_id_x, person_id_x) as matched = True
+# ----------------------------
+if not source_df.empty:
+    source_keys = set(zip(source_df["referral_id"], source_df["person_id"]))
+
+    mask_source = df_long.apply(
+        lambda r: (r["referral_id"], r["person_id"]) in source_keys,
+        axis=1
+    )
+
+    df_long.loc[mask_source, "is_matched"] = True
 
 # df_long is now updated
