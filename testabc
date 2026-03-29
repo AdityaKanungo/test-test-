@@ -2,91 +2,80 @@ import pandas as pd
 import numpy as np
 
 # ----------------------------
-# 1. Prep date columns
+# helper to split ; separated values safely
 # ----------------------------
-x = x.copy()
-df_main = df_main.copy()
-
-x['DOB'] = pd.to_datetime(x['DOB'], errors='coerce')
-df_main['DOB'] = pd.to_datetime(df_main['DOB'], errors='coerce')
-
-# ----------------------------
-# 2. Function to split ; separated values
-# ----------------------------
-def split_to_list(val):
-    if pd.isna(val):
+def split_semicolon_values(x):
+    if pd.isna(x):
         return []
-    val = str(val).strip()
-    if val == "":
+    x = str(x).strip()
+    if x == "":
         return []
-    return [v.strip() for v in val.split(';') if v.strip() != ""]
+    return [i.strip() for i in x.split(";") if i.strip() != ""]
+
 
 # ----------------------------
-# 3. Split both matched columns into lists
+# make a working copy
 # ----------------------------
-x['likely_matched_referral_ids_list'] = x['likely_matched_referral_ids'].apply(split_to_list)
-x['likely_matched_person_ids_list'] = x['likely_matched_person_ids'].apply(split_to_list)
+df_long = df_long.copy()
+z = z.copy()
+
+# optional: make sure is_matched exists
+if "is_matched" not in df_long.columns:
+    df_long["is_matched"] = False
 
 # ----------------------------
-# 4. Make sure pairs stay aligned
-#    Example:
-#    referral_ids = [a,b,c]
-#    person_ids   = [x,y,z]
-#    --> (a,x), (b,y), (c,z)
+# build row-wise pairs from z
+# each referral id and person id at the same position belong together
 # ----------------------------
-def make_pairs(row):
-    refs = row['likely_matched_referral_ids_list']
-    persons = row['likely_matched_person_ids_list']
-    
-    # keep only up to minimum length so pairing does not break
-    n = min(len(refs), len(persons))
-    return list(zip(refs[:n], persons[:n]))
+pairs = []
 
-x['matched_pairs'] = x.apply(make_pairs, axis=1)
+for _, row in z.iterrows():
+    long_person_id_x = row["LONG_PERSON_ID_x"]
+    referral_id_x = row["referral_id_x"]
+    person_id_x = row["person_id_x"]
 
-# ----------------------------
-# 5. Explode paired values
-# ----------------------------
-x_expanded = x.explode('matched_pairs').copy()
+    ref_list = split_semicolon_values(row["likely_matched_referral_ids"])
+    per_list = split_semicolon_values(row["likely_matched_person_ids"])
 
-# remove rows where no pair exists
-x_expanded = x_expanded[x_expanded['matched_pairs'].notna()].copy()
+    # only pair values positionally
+    n = min(len(ref_list), len(per_list))
 
-x_expanded[['likely_matched_referral_ids', 'likely_matched_person_ids']] = pd.DataFrame(
-    x_expanded['matched_pairs'].tolist(),
-    index=x_expanded.index
-)
+    for i in range(n):
+        pairs.append({
+            "source_LONG_PERSON_ID": long_person_id_x,
+            "source_referral_id": referral_id_x,
+            "source_person_id": person_id_x,
+            "target_referral_id": ref_list[i],
+            "target_person_id": per_list[i]
+        })
+
+pairs_df = pd.DataFrame(pairs)
 
 # ----------------------------
-# 6. Convert IDs to numeric
+# align dtypes with df_long so matching works properly
 # ----------------------------
-x_expanded['likely_matched_referral_ids'] = pd.to_numeric(
-    x_expanded['likely_matched_referral_ids'], errors='coerce'
-)
-x_expanded['likely_matched_person_ids'] = pd.to_numeric(
-    x_expanded['likely_matched_person_ids'], errors='coerce'
-)
+if not pairs_df.empty:
+    pairs_df["target_referral_id"] = pairs_df["target_referral_id"].astype(df_long["referral_id"].dtype)
+    pairs_df["target_person_id"] = pairs_df["target_person_id"].astype(df_long["person_id"].dtype)
 
-df_main['referral_id'] = pd.to_numeric(df_main['referral_id'], errors='coerce')
-df_main['person_id'] = pd.to_numeric(df_main['person_id'], errors='coerce')
+    # create lookup from target referral/person -> LONG_PERSON_ID_x
+    update_map = pairs_df[["target_referral_id", "target_person_id", "source_LONG_PERSON_ID"]].drop_duplicates()
 
-# ----------------------------
-# 7. Merge using exploded matched pairs
-# ----------------------------
-merged = x_expanded.merge(
-    df_main,
-    left_on=['likely_matched_referral_ids', 'likely_matched_person_ids'],
-    right_on=['referral_id', 'person_id'],
-    how='left',
-    suffixes=('_x', '_y')
-)
+    # merge into df_long
+    df_long = df_long.merge(
+        update_map,
+        how="left",
+        left_on=["referral_id", "person_id"],
+        right_on=["target_referral_id", "target_person_id"]
+    )
 
-# ----------------------------
-# 8. DOB comparison
-# ----------------------------
-merged['dob_within_365_days'] = (
-    (merged['DOB_x'] - merged['DOB_y']).abs().dt.days <= 365
-)
+    # update LONG_PERSON_ID and is_matched where a match is found
+    mask = df_long["source_LONG_PERSON_ID"].notna()
 
-# view result
-merged[['likely_matched_referral_ids', 'likely_matched_person_ids', 'DOB_x', 'DOB_y', 'dob_within_365_days']]
+    df_long.loc[mask, "LONG_PERSON_ID"] = df_long.loc[mask, "source_LONG_PERSON_ID"]
+    df_long.loc[mask, "is_matched"] = True
+
+    # drop helper columns
+    df_long = df_long.drop(columns=["target_referral_id", "target_person_id", "source_LONG_PERSON_ID"])
+
+# df_long is now updated
