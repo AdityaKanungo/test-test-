@@ -1,25 +1,9 @@
+# convert ns_df keys
+ns_df['referral_id1'] = ns_df['referral_id1'].astype(str)
+ns_df['person_id1'] = ns_df['person_id1'].astype(str)
+ns_df['referral_id2'] = ns_df['referral_id2'].astype(str)
+ns_df['person_id2'] = ns_df['person_id2'].astype(str)
 
-# Step 1: prepare lookup table
-lookup = df[['referral_id', 'person_id', 'referral_type']].copy()
-
-# ----------------------------
-# Step 2: merge for referral_type1
-# ----------------------------
-ns_df = ns_df.merge(
-    lookup,
-    how='left',
-    left_on=['referral_id1', 'person_id1'],
-    right_on=['referral_id', 'person_id']
-).rename(columns={'referral_type': 'referral_type1'}) \
- .drop(columns=['referral_id', 'person_id'])
-
-# ----------------------------
-# Step 3: merge for referral_type2
-# ----------------------------
-ns_df = ns_df.merge(
-    lookup,
-    how='left',
-    left_on=['referral_id2', 'person_id2'],
-    right_on=['referral_id', 'person_id']
-).rename(columns={'referral_type': 'referral_type2'}) \
- .drop(columns=['referral_id', 'person_id'])
+# convert df keys
+df['referral_id'] = df['referral_id'].astype(str)
+df['person_id'] = df['person_id'].astype(str)
