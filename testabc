@@ -1,1 +1,25 @@
 
+# Step 1: prepare lookup table
+lookup = df[['referral_id', 'person_id', 'referral_type']].copy()
+
+# ----------------------------
+# Step 2: merge for referral_type1
+# ----------------------------
+ns_df = ns_df.merge(
+    lookup,
+    how='left',
+    left_on=['referral_id1', 'person_id1'],
+    right_on=['referral_id', 'person_id']
+).rename(columns={'referral_type': 'referral_type1'}) \
+ .drop(columns=['referral_id', 'person_id'])
+
+# ----------------------------
+# Step 3: merge for referral_type2
+# ----------------------------
+ns_df = ns_df.merge(
+    lookup,
+    how='left',
+    left_on=['referral_id2', 'person_id2'],
+    right_on=['referral_id', 'person_id']
+).rename(columns={'referral_type': 'referral_type2'}) \
+ .drop(columns=['referral_id', 'person_id'])
