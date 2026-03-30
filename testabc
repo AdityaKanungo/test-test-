@@ -1,9 +1,1 @@
-# convert ns_df keys
-ns_df['referral_id1'] = ns_df['referral_id1'].astype(str)
-ns_df['person_id1'] = ns_df['person_id1'].astype(str)
-ns_df['referral_id2'] = ns_df['referral_id2'].astype(str)
-ns_df['person_id2'] = ns_df['person_id2'].astype(str)
 
-# convert df keys
-df['referral_id'] = df['referral_id'].astype(str)
-df['person_id'] = df['person_id'].astype(str)
