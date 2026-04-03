@@ -1,1 +1,58 @@
+Got it — you want Phase 2 written in the same structured, concise style as Phase 1. Here it is:
 
+
+---
+
+Approach (Phase 2)
+
+Fatality indicators are further validated by aligning the fatality_indicator field with the confirmed outcome field did_the_child_die? to ensure consistency across the dataset.
+
+An indication of a Fatality = “Yes” or “No” is only retained if it is consistent with the did_the_child_die? field based on the logic below:
+
+
+
+---
+
+Logic for Phase 2 Data Alignment
+
+If the fatality_indicator value differs from did_the_child_die?, the record is evaluated.
+
+The update is applied only when:
+
+fatality_indicator contains a valid value: “Y”, “N”, or “U”, and
+
+did_the_child_die? contains a valid value: “Y” or “N”
+
+
+If both conditions are met:
+
+The value of fatality_indicator is updated to match the value in did_the_child_die?
+
+
+If the values already match:
+
+No change is made.
+
+
+If either field contains invalid or missing values:
+
+The record is left unchanged.
+
+
+
+
+---
+
+Key Notes
+
+The did_the_child_die? field is treated as the authoritative source for fatality confirmation.
+
+“Unknown” (“U”) values in fatality_indicator are resolved when a confirmed value (“Y” or “N”) is available.
+
+This process ensures data consistency and accuracy for downstream reporting and analysis.
+
+
+
+---
+
+If you want, I can align wording exactly 1:1 with Phase 1 formatting (even tighter bullets) or merge both phases into a single “Methodology” section.
