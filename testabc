@@ -1,518 +1,382 @@
-from __future__ import annotations
-
-import re
+import pandas as pd
+import numpy as np
 from collections import defaultdict
-from dataclasses import dataclass
-from datetime import datetime
 from itertools import combinations
-from math import isnan
-from typing import Any, Dict, List, Mapping, Optional, Sequence, Set, Tuple
-
-try:
-    import pandas as pd
-except ImportError:  # pragma: no cover
-    pd = None
+import unicodedata
 
 
-MISSING_SENTINELS = {
-    "",
-    "NULL",
-    "NONE",
-    "N/A",
-    "NA",
-    "UNKNOWN",
-    "UNK",
-}
-
-DATE_FORMATS = (
-    "%Y-%m-%d",
-    "%m/%d/%Y",
-    "%m/%d/%y",
-    "%m-%d-%Y",
-    "%m-%d-%y",
-    "%Y/%m/%d",
-    "%Y%m%d",
-)
-
-DEFAULT_INVALID_SSNS = {
-    "000000000",
-    "111111111",
-    "123456789",
-    "999999999",
-}
-
-MATCH_YES = "Yes"
-MATCH_NO = "No"
-MATCH_BLANK = "Blank"
-
-EXACT_SCENARIOS = {0, 1, 2, 3, 4, 5, 6}
-LIKELY_SCENARIOS = {7, 8, 9, 10, 11, 12}
-
-SCENARIO_DEFINITIONS: Dict[Tuple[str, str, str, str], int] = {
-    (MATCH_YES, MATCH_YES, MATCH_YES, MATCH_YES): 0,
-    (MATCH_YES, MATCH_YES, MATCH_NO, MATCH_YES): 1,
-    (MATCH_YES, MATCH_NO, MATCH_YES, MATCH_YES): 2,
-    (MATCH_NO, MATCH_YES, MATCH_YES, MATCH_YES): 3,
-    (MATCH_NO, MATCH_YES, MATCH_BLANK, MATCH_YES): 4,
-    (MATCH_NO, MATCH_NO, MATCH_YES, MATCH_YES): 5,
-    (MATCH_YES, MATCH_NO, MATCH_BLANK, MATCH_YES): 6,
-    (MATCH_NO, MATCH_YES, MATCH_NO, MATCH_YES): 7,
-    (MATCH_YES, MATCH_NO, MATCH_NO, MATCH_YES): 8,
-    (MATCH_YES, MATCH_NO, MATCH_YES, MATCH_BLANK): 9,
-    (MATCH_NO, MATCH_YES, MATCH_YES, MATCH_BLANK): 10,
-    (MATCH_NO, MATCH_YES, MATCH_NO, MATCH_BLANK): 11,
-    (MATCH_YES, MATCH_YES, MATCH_YES, MATCH_BLANK): 12,
-}
-
-NAME_CLEAN_RE = re.compile(r"[^A-Z0-9]")
+# ----------------------------
+# Preprocessing helpers
+# ----------------------------
+def normalize_series_name(s: pd.Series) -> pd.Series:
+    s = s.astype("string").fillna("")
+    s = s.map(
+        lambda x: unicodedata.normalize("NFKD", x).encode("ascii", "ignore").decode("utf-8")
+    )
+    s = (
+        s.str.lower()
+         .str.strip()
+         .str.replace(r"[^\w\s]", "", regex=True)
+         .str.replace(r"\s+", " ", regex=True)
+    )
+    s = s.replace("", pd.NA)
+    return s
 
 
-@dataclass(frozen=True)
-class ReferralColumns:
-    referral_id: str = "referral_id"
-    referral_type: str = "referral_type"
-    first_name: str = "FN"
-    last_name: str = "LN"
-    ssn: str = "SSN"
-    dob: str = "DOB"
+def normalize_series_ssn(s: pd.Series) -> pd.Series:
+    s = s.astype("string")
+    s = s.str.replace(r"\D", "", regex=True)
+    s = s.replace("", pd.NA)
+
+    # Optional: treat obvious junk SSNs as blank
+    s = s.mask(~s.str.fullmatch(r"\d{9}", na=False), pd.NA)
+    s = s.replace(
+        {
+            "000000000": pd.NA,
+            "111111111": pd.NA,
+            "123456789": pd.NA,
+            "999999999": pd.NA,
+        }
+    )
+    return s
 
 
-@dataclass
-class PreparedReferral:
-    row_number: int
-    raw_row: Dict[str, Any]
-    referral_id: str
-    referral_type: str
-    first_name: Optional[str]
-    last_name: Optional[str]
-    ssn: Optional[str]
-    dob: Optional[str]
+def normalize_series_dob(s: pd.Series) -> pd.Series:
+    return pd.to_datetime(s, errors="coerce").dt.date
 
 
-@dataclass(frozen=True)
-class PairMatch:
-    left_index: int
-    right_index: int
-    left_referral_id: str
-    right_referral_id: str
-    scenario_id: int
-    match_type: str
-    is_match: bool
-    is_likely: bool
-    fn_match: str
-    ln_match: str
-    dob_match: str
-    ssn_match: str
+# ----------------------------
+# Pair comparison helpers
+# ----------------------------
+def is_blank(x):
+    return pd.isna(x) or (isinstance(x, str) and x.strip() == "")
 
 
-@dataclass
-class MatchResult:
-    referrals: List[PreparedReferral]
-    pair_matches: List[PairMatch]
-    person_ids_by_index: Dict[int, str]
-
-    @property
-    def exact_match_count(self) -> int:
-        return sum(1 for pair in self.pair_matches if pair.is_match)
-
-    @property
-    def likely_match_count(self) -> int:
-        return sum(1 for pair in self.pair_matches if pair.is_likely)
-
-    def to_pair_rows(self) -> List[Dict[str, Any]]:
-        return [
-            {
-                "left_referral_id": pair_match.left_referral_id,
-                "right_referral_id": pair_match.right_referral_id,
-                "left_long_person_id": self.person_ids_by_index[pair_match.left_index],
-                "right_long_person_id": self.person_ids_by_index[pair_match.right_index],
-                "scenario_id": pair_match.scenario_id,
-                "match_type": pair_match.match_type,
-                "is_match": pair_match.is_match,
-                "is_likely": pair_match.is_likely,
-                "fn_match": pair_match.fn_match,
-                "ln_match": pair_match.ln_match,
-                "dob_match": pair_match.dob_match,
-                "ssn_match": pair_match.ssn_match,
-            }
-            for pair_match in self.pair_matches
-        ]
-
-    def to_referral_rows(self) -> List[Dict[str, Any]]:
-        return [
-            {
-                **referral.raw_row,
-                "long_person_id": self.person_ids_by_index[referral.row_number],
-            }
-            for referral in self.referrals
-        ]
+def nonblank_equal(a, b):
+    return (not is_blank(a)) and (not is_blank(b)) and (a == b)
 
 
-@dataclass
-class TableMatchOutput:
-    pair_matches: Any
-    referrals_with_person_id: Any
-    result: MatchResult
+def nonblank_not_equal(a, b):
+    return (not is_blank(a)) and (not is_blank(b)) and (a != b)
 
 
+def dob_is_strict_match(dob1, dob2, dob_est1, dob_est2):
+    if is_blank(dob1) or is_blank(dob2):
+        return False
+    if str(dob_est1).upper() == "Y" or str(dob_est2).upper() == "Y":
+        return False
+    return dob1 == dob2
+
+
+def dob_is_strict_not_match(dob1, dob2):
+    if is_blank(dob1) or is_blank(dob2):
+        return False
+    return dob1 != dob2
+
+
+# ----------------------------
+# Exact match rules 0-6
+# ----------------------------
+def match_rule(r1, r2):
+    fn1, ln1, dob1, ssn1, dob_est1 = r1
+    fn2, ln2, dob2, ssn2, dob_est2 = r2
+
+    fn_eq = nonblank_equal(fn1, fn2)
+    fn_ne = nonblank_not_equal(fn1, fn2)
+    ln_eq = nonblank_equal(ln1, ln2)
+    ln_ne = nonblank_not_equal(ln1, ln2)
+    ssn_eq = nonblank_equal(ssn1, ssn2)
+
+    dob_match = dob_is_strict_match(dob1, dob2, dob_est1, dob_est2)
+    dob_ne_match = dob_is_strict_not_match(dob1, dob2)
+    dob_blank = is_blank(dob1) or is_blank(dob2)
+
+    if fn_eq and ln_eq and dob_match and ssn_eq:
+        return 0
+    if fn_eq and ln_eq and dob_ne_match and ssn_eq:
+        return 1
+    if fn_eq and ln_ne and dob_match and ssn_eq:
+        return 2
+    if fn_ne and ln_eq and dob_match and ssn_eq:
+        return 3
+    if fn_ne and ln_eq and dob_blank and ssn_eq:
+        return 4
+    if fn_ne and ln_ne and dob_match and ssn_eq:
+        return 5
+    if fn_eq and ln_ne and dob_blank and ssn_eq:
+        return 6
+
+    return None
+
+
+# ----------------------------
+# Likely match rules 7-12
+# ----------------------------
+def likely_match_rule(r1, r2):
+    fn1, ln1, dob1, ssn1 = r1
+    fn2, ln2, dob2, ssn2 = r2
+
+    fn_eq = nonblank_equal(fn1, fn2)
+    fn_ne = nonblank_not_equal(fn1, fn2)
+    ln_eq = nonblank_equal(ln1, ln2)
+    ln_ne = nonblank_not_equal(ln1, ln2)
+    ssn_eq = nonblank_equal(ssn1, ssn2)
+    ssn_blank = is_blank(ssn1) or is_blank(ssn2)
+
+    dob_blank = is_blank(dob1) or is_blank(dob2)
+    dob_match = (not dob_blank) and (dob1 == dob2)
+    dob_ne_match = (not dob_blank) and (dob1 != dob2)
+
+    if fn_ne and ln_eq and dob_ne_match and ssn_eq:
+        return 7
+    if fn_eq and ln_ne and dob_ne_match and ssn_eq:
+        return 8
+    if fn_eq and ln_ne and dob_match and ssn_blank:
+        return 9
+    if fn_ne and ln_eq and dob_match and ssn_blank:
+        return 10
+    if fn_ne and ln_eq and dob_ne_match and ssn_blank:
+        return 11
+    if fn_eq and ln_eq and dob_match and ssn_blank:
+        return 12
+
+    return None
+
+
+# ----------------------------
+# Union-find
+# ----------------------------
 class DisjointSet:
-    def __init__(self, size: int) -> None:
-        self.parent = list(range(size))
-        self.rank = [0] * size
+    def __init__(self, n):
+        self.parent = list(range(n))
+        self.rank = [0] * n
 
-    def find(self, item: int) -> int:
-        parent = self.parent[item]
-        if parent != item:
-            self.parent[item] = self.find(parent)
-        return self.parent[item]
+    def find(self, x):
+        while self.parent[x] != x:
+            self.parent[x] = self.parent[self.parent[x]]
+            x = self.parent[x]
+        return x
 
-    def union(self, left: int, right: int) -> None:
-        left_root = self.find(left)
-        right_root = self.find(right)
-        if left_root == right_root:
+    def union(self, a, b):
+        pa, pb = self.find(a), self.find(b)
+        if pa == pb:
             return
-
-        left_rank = self.rank[left_root]
-        right_rank = self.rank[right_root]
-
-        if left_rank < right_rank:
-            self.parent[left_root] = right_root
-            return
-        if left_rank > right_rank:
-            self.parent[right_root] = left_root
-            return
-
-        self.parent[right_root] = left_root
-        self.rank[left_root] += 1
+        if self.rank[pa] < self.rank[pb]:
+            pa, pb = pb, pa
+        self.parent[pb] = pa
+        if self.rank[pa] == self.rank[pb]:
+            self.rank[pa] += 1
 
 
-def normalize_text(value: Optional[Any]) -> Optional[str]:
-    if value is None:
-        return None
+# ----------------------------
+# Main function
+# ----------------------------
+def build_longitudinal_dataset(victim_table: pd.DataFrame) -> pd.DataFrame:
+    df = victim_table.copy()
+    n = len(df)
 
-    if isinstance(value, float) and isnan(value):
-        return None
+    # Stable row ids
+    df["ROW_ID"] = np.arange(n, dtype=int)
 
-    if pd is not None:
-        try:
-            if bool(pd.isna(value)):
-                return None
-        except (TypeError, ValueError):
-            pass
+    # Clean fields
+    df["FN"] = normalize_series_name(df["first_name"])
+    df["LN"] = normalize_series_name(df["last_name"])
+    df["DOB"] = normalize_series_dob(df["date_of_birth"])
+    df["SSN"] = normalize_series_ssn(df["social_security_number"])
 
-    text = str(value).strip()
-    if not text:
-        return None
-    upper_text = text.upper()
-    if upper_text in MISSING_SENTINELS:
-        return None
-    return upper_text
+    # If DOB estimated flag does not exist, create blank flag
+    if "date_of_birth_estimated" not in df.columns:
+        df["date_of_birth_estimated"] = ""
 
+    # Output columns
+    pair_lists = [[] for _ in range(n)]
+    person_lists = [[] for _ in range(n)]
+    rule_lists = [[] for _ in range(n)]
 
-def normalize_name(value: Optional[Any]) -> Optional[str]:
-    text = normalize_text(value)
-    if text is None:
-        return None
-    cleaned = NAME_CLEAN_RE.sub("", text)
-    return cleaned or None
+    likely_pair_lists = [[] for _ in range(n)]
+    likely_person_lists = [[] for _ in range(n)]
+    likely_rule_lists = [[] for _ in range(n)]
 
+    # Fast array access
+    FN = df["FN"].to_numpy(object)
+    LN = df["LN"].to_numpy(object)
+    DOB = df["DOB"].to_numpy(object)
+    SSN = df["SSN"].to_numpy(object)
+    DOB_EST = df["date_of_birth_estimated"].fillna("").to_numpy(object)
 
-def normalize_ssn(
-    value: Optional[Any],
-    invalid_ssns: Optional[Set[str]] = None,
-) -> Optional[str]:
-    text = normalize_text(value)
-    if text is None:
-        return None
+    ref_ids = df["referral_id"].to_numpy(object)
+    person_ids = df["person_id"].to_numpy(object) if "person_id" in df.columns else df["referral_id"].to_numpy(object)
 
-    digits = "".join(character for character in text if character.isdigit())
-    if len(digits) != 9:
-        return None
+    # ----------------------------
+    # Exact matches: block on SSN only
+    # Covers rules 0-8 candidate generation for same SSN
+    # ----------------------------
+    dsu = DisjointSet(n)
+    ssn_groups = defaultdict(list)
 
-    invalid_values = invalid_ssns if invalid_ssns is not None else DEFAULT_INVALID_SSNS
-    if digits in invalid_values:
-        return None
+    for i, ssn in enumerate(SSN):
+        if not is_blank(ssn):
+            ssn_groups[ssn].append(i)
 
-    return digits
-
-
-def normalize_dob(value: Optional[Any]) -> Optional[str]:
-    text = normalize_text(value)
-    if text is None:
-        return None
-
-    for date_format in DATE_FORMATS:
-        try:
-            return datetime.strptime(text, date_format).date().isoformat()
-        except ValueError:
+    for idxs in ssn_groups.values():
+        if len(idxs) < 2:
             continue
 
-    digits = "".join(character for character in text if character.isdigit())
-    if len(digits) == 8:
-        for date_format in ("%m%d%Y", "%d%m%Y"):
-            try:
-                return datetime.strptime(digits, date_format).date().isoformat()
-            except ValueError:
+        for i, j in combinations(idxs, 2):
+            r1 = (FN[i], LN[i], DOB[i], SSN[i], DOB_EST[i])
+            r2 = (FN[j], LN[j], DOB[j], SSN[j], DOB_EST[j])
+
+            rule = match_rule(r1, r2)
+            if rule is None:
                 continue
 
-    return text
+            pair_lists[i].append(ref_ids[j])
+            person_lists[i].append(person_ids[j])
+            rule_lists[i].append(rule)
 
+            pair_lists[j].append(ref_ids[i])
+            person_lists[j].append(person_ids[i])
+            rule_lists[j].append(rule)
 
-def name_match_state(left: Optional[str], right: Optional[str]) -> str:
-    return MATCH_YES if left is not None and right is not None and left == right else MATCH_NO
+            dsu.union(i, j)
 
+    # Assign LONG_PERSON_ID from exact matches only
+    root_to_personid = {}
+    next_id = 1
+    long_person = np.empty(n, dtype=int)
 
-def nullable_match_state(left: Optional[str], right: Optional[str]) -> str:
-    if left is None or right is None:
-        return MATCH_BLANK
-    return MATCH_YES if left == right else MATCH_NO
+    for i in range(n):
+        root = dsu.find(i)
+        if root not in root_to_personid:
+            root_to_personid[root] = next_id
+            next_id += 1
+        long_person[i] = root_to_personid[root]
 
+    df["LONG_PERSON_ID"] = long_person
 
-def classify_pair(left: PreparedReferral, right: PreparedReferral) -> Optional[PairMatch]:
-    fn_state = name_match_state(left.first_name, right.first_name)
-    ln_state = name_match_state(left.last_name, right.last_name)
-    dob_state = nullable_match_state(left.dob, right.dob)
-    ssn_state = nullable_match_state(left.ssn, right.ssn)
+    # ----------------------------
+    # Likely matches: minimal complete blocking
+    #
+    # 7,8  -> same nonblank SSN
+    # 9,10,12 -> same nonblank DOB + at least one blank SSN
+    # 11 -> same nonblank LN + at least one blank SSN
+    # ----------------------------
+    pairs_seen = set()
 
-    scenario_id = SCENARIO_DEFINITIONS.get((fn_state, ln_state, dob_state, ssn_state))
-    if scenario_id is None:
-        return None
-
-    left_index, right_index = sorted((left.row_number, right.row_number))
-    left_record = left if left.row_number == left_index else right
-    right_record = right if right.row_number == right_index else left
-
-    return PairMatch(
-        left_index=left_index,
-        right_index=right_index,
-        left_referral_id=left_record.referral_id,
-        right_referral_id=right_record.referral_id,
-        scenario_id=scenario_id,
-        match_type="match" if scenario_id in EXACT_SCENARIOS else "likely",
-        is_match=scenario_id in EXACT_SCENARIOS,
-        is_likely=scenario_id in LIKELY_SCENARIOS,
-        fn_match=fn_state,
-        ln_match=ln_state,
-        dob_match=dob_state,
-        ssn_match=ssn_state,
-    )
-
-
-def prepare_referrals(
-    rows: Sequence[Mapping[str, Any]],
-    columns: ReferralColumns = ReferralColumns(),
-    invalid_ssns: Optional[Set[str]] = None,
-) -> List[PreparedReferral]:
-    prepared_rows: List[PreparedReferral] = []
-
-    for row_number, raw_row in enumerate(rows):
-        row_dict = dict(raw_row)
-        prepared_rows.append(
-            PreparedReferral(
-                row_number=row_number,
-                raw_row=row_dict,
-                referral_id=str(row_dict[columns.referral_id]).strip(),
-                referral_type=str(row_dict.get(columns.referral_type, "")).strip(),
-                first_name=normalize_name(row_dict.get(columns.first_name)),
-                last_name=normalize_name(row_dict.get(columns.last_name)),
-                ssn=normalize_ssn(row_dict.get(columns.ssn), invalid_ssns=invalid_ssns),
-                dob=normalize_dob(row_dict.get(columns.dob)),
-            )
-        )
-
-    return prepared_rows
-
-
-def _compare_all_pairs_in_group(
-    indices: Sequence[int],
-    referrals: Sequence[PreparedReferral],
-    pair_matches: Dict[Tuple[int, int], PairMatch],
-    unions: DisjointSet,
-) -> None:
-    for left_index, right_index in combinations(indices, 2):
-        pair_match = classify_pair(referrals[left_index], referrals[right_index])
-        if pair_match is None:
+    # Block A: same SSN, only evaluate likely rules 7 and 8
+    for idxs in ssn_groups.values():
+        if len(idxs) < 2:
             continue
 
-        pair_key = (pair_match.left_index, pair_match.right_index)
-        if pair_key in pair_matches:
-            continue
+        for i, j in combinations(idxs, 2):
+            key = (i, j) if i < j else (j, i)
+            if key in pairs_seen:
+                continue
+            pairs_seen.add(key)
 
-        pair_matches[pair_key] = pair_match
-        if pair_match.is_match:
-            unions.union(pair_match.left_index, pair_match.right_index)
+            r1 = (FN[i], LN[i], DOB[i], SSN[i])
+            r2 = (FN[j], LN[j], DOB[j], SSN[j])
 
-
-def _compare_anchor_pairs(
-    anchor_indices: Sequence[int],
-    group_indices: Sequence[int],
-    referrals: Sequence[PreparedReferral],
-    allowed_scenarios: Set[int],
-    pair_matches: Dict[Tuple[int, int], PairMatch],
-) -> None:
-    seen_pairs: Set[Tuple[int, int]] = set()
-
-    for anchor_index in anchor_indices:
-        for candidate_index in group_indices:
-            if anchor_index == candidate_index:
+            rule = likely_match_rule(r1, r2)
+            if rule not in (7, 8):
                 continue
 
-            pair_key = (
-                anchor_index
-                if anchor_index < candidate_index
-                else candidate_index,
-                candidate_index
-                if anchor_index < candidate_index
-                else anchor_index,
-            )
-            if pair_key in seen_pairs or pair_key in pair_matches:
-                continue
+            likely_pair_lists[i].append(ref_ids[j])
+            likely_person_lists[i].append(person_ids[j])
+            likely_rule_lists[i].append(rule)
 
-            seen_pairs.add(pair_key)
-            pair_match = classify_pair(referrals[pair_key[0]], referrals[pair_key[1]])
-            if pair_match is None or pair_match.scenario_id not in allowed_scenarios:
-                continue
+            likely_pair_lists[j].append(ref_ids[i])
+            likely_person_lists[j].append(person_ids[i])
+            likely_rule_lists[j].append(rule)
 
-            pair_matches[pair_key] = pair_match
+    # Block B: same DOB, only rows that could satisfy blank-SSN likely rules
+    dob_groups = defaultdict(list)
+    for i, dob in enumerate(DOB):
+        if not is_blank(dob):
+            dob_groups[dob].append(i)
 
-
-def assign_long_person_ids(
-    referrals: Sequence[PreparedReferral],
-    unions: DisjointSet,
-    prefix: str = "LP",
-) -> Dict[int, str]:
-    root_to_person_id: Dict[int, str] = {}
-    person_ids_by_index: Dict[int, str] = {}
-    next_person_number = 1
-
-    for referral in referrals:
-        root = unions.find(referral.row_number)
-        person_id = root_to_person_id.get(root)
-        if person_id is None:
-            person_id = f"{prefix}{next_person_number:08d}"
-            root_to_person_id[root] = person_id
-            next_person_number += 1
-        person_ids_by_index[referral.row_number] = person_id
-
-    return person_ids_by_index
-
-
-def match_referrals(
-    referrals: Sequence[PreparedReferral],
-    person_id_prefix: str = "LP",
-) -> MatchResult:
-    pair_matches: Dict[Tuple[int, int], PairMatch] = {}
-    unions = DisjointSet(len(referrals))
-
-    ssn_groups: Dict[str, List[int]] = defaultdict(list)
-    dob_groups: Dict[str, List[int]] = defaultdict(list)
-    ln_groups: Dict[str, List[int]] = defaultdict(list)
-
-    for referral in referrals:
-        if referral.ssn is not None:
-            ssn_groups[referral.ssn].append(referral.row_number)
-        if referral.dob is not None:
-            dob_groups[referral.dob].append(referral.row_number)
-        if referral.last_name is not None:
-            ln_groups[referral.last_name].append(referral.row_number)
-
-    for group_indices in ssn_groups.values():
-        if len(group_indices) < 2:
-            continue
-        _compare_all_pairs_in_group(group_indices, referrals, pair_matches, unions)
-
-    for group_indices in dob_groups.values():
-        if len(group_indices) < 2:
+    for idxs in dob_groups.values():
+        if len(idxs) < 2:
             continue
 
-        missing_ssn_indices = [
-            index for index in group_indices if referrals[index].ssn is None
-        ]
-        if not missing_ssn_indices:
+        candidate_idxs = [i for i in idxs if is_blank(SSN[i])]
+        if not candidate_idxs:
             continue
 
-        _compare_anchor_pairs(
-            anchor_indices=missing_ssn_indices,
-            group_indices=group_indices,
-            referrals=referrals,
-            allowed_scenarios={9, 10, 12},
-            pair_matches=pair_matches,
-        )
+        # Compare blank-SSN anchors against whole DOB group
+        for i in candidate_idxs:
+            for j in idxs:
+                if i == j:
+                    continue
 
-    for group_indices in ln_groups.values():
-        if len(group_indices) < 2:
+                a, b = (i, j) if i < j else (j, i)
+                key = (a, b)
+                if key in pairs_seen:
+                    continue
+                pairs_seen.add(key)
+
+                r1 = (FN[a], LN[a], DOB[a], SSN[a])
+                r2 = (FN[b], LN[b], DOB[b], SSN[b])
+
+                rule = likely_match_rule(r1, r2)
+                if rule not in (9, 10, 12):
+                    continue
+
+                likely_pair_lists[a].append(ref_ids[b])
+                likely_person_lists[a].append(person_ids[b])
+                likely_rule_lists[a].append(rule)
+
+                likely_pair_lists[b].append(ref_ids[a])
+                likely_person_lists[b].append(person_ids[a])
+                likely_rule_lists[b].append(rule)
+
+    # Block C: same LN, only rows that could satisfy rule 11
+    ln_groups = defaultdict(list)
+    for i, ln in enumerate(LN):
+        if not is_blank(ln):
+            ln_groups[ln].append(i)
+
+    for idxs in ln_groups.values():
+        if len(idxs) < 2:
             continue
 
-        missing_ssn_indices = [
-            index for index in group_indices if referrals[index].ssn is None
-        ]
-        if not missing_ssn_indices:
+        candidate_idxs = [i for i in idxs if is_blank(SSN[i])]
+        if not candidate_idxs:
             continue
 
-        _compare_anchor_pairs(
-            anchor_indices=missing_ssn_indices,
-            group_indices=group_indices,
-            referrals=referrals,
-            allowed_scenarios={11},
-            pair_matches=pair_matches,
-        )
+        for i in candidate_idxs:
+            for j in idxs:
+                if i == j:
+                    continue
 
-    sorted_pairs = sorted(
-        pair_matches.values(),
-        key=lambda pair: (pair.scenario_id, pair.left_referral_id, pair.right_referral_id),
-    )
-    person_ids = assign_long_person_ids(referrals, unions, prefix=person_id_prefix)
+                a, b = (i, j) if i < j else (j, i)
+                key = (a, b)
+                if key in pairs_seen:
+                    continue
+                pairs_seen.add(key)
 
-    return MatchResult(
-        referrals=list(referrals),
-        pair_matches=sorted_pairs,
-        person_ids_by_index=person_ids,
-    )
+                r1 = (FN[a], LN[a], DOB[a], SSN[a])
+                r2 = (FN[b], LN[b], DOB[b], SSN[b])
 
+                rule = likely_match_rule(r1, r2)
+                if rule != 11:
+                    continue
 
-def _is_pandas_dataframe(value: Any) -> bool:
-    return pd is not None and isinstance(value, pd.DataFrame)
+                likely_pair_lists[a].append(ref_ids[b])
+                likely_person_lists[a].append(person_ids[b])
+                likely_rule_lists[a].append(rule)
 
+                likely_pair_lists[b].append(ref_ids[a])
+                likely_person_lists[b].append(person_ids[a])
+                likely_rule_lists[b].append(rule)
 
-def _rows_from_victim_table(victim_table: Any) -> List[Dict[str, Any]]:
-    if _is_pandas_dataframe(victim_table):
-        return victim_table.to_dict(orient="records")
+    # Push outputs back to df
+    df["matched_pair"] = [";".join(map(str, vals)) for vals in pair_lists]
+    df["matched_person"] = [";".join(map(str, vals)) for vals in person_lists]
+    df["matched_rule"] = [";".join(map(str, vals)) for vals in rule_lists]
 
-    if not isinstance(victim_table, Sequence) or isinstance(victim_table, (str, bytes)):
-        raise TypeError(
-            "victim_table must be a pandas DataFrame or a sequence of row dictionaries."
-        )
+    df["likely_matched_pair"] = [";".join(map(str, vals)) for vals in likely_pair_lists]
+    df["likely_matched_person"] = [";".join(map(str, vals)) for vals in likely_person_lists]
+    df["likely_matched_rule"] = [";".join(map(str, vals)) for vals in likely_rule_lists]
 
-    rows = [dict(row) for row in victim_table]
-    if rows and not isinstance(rows[0], dict):
-        raise TypeError(
-            "victim_table rows must be mappings when a pandas DataFrame is not used."
-        )
-    return rows
-
-
-def match_victim_table(
-    victim_table: Any,
-    columns: ReferralColumns = ReferralColumns(),
-    person_id_prefix: str = "LP",
-    invalid_ssns: Optional[Set[str]] = None,
-) -> TableMatchOutput:
-    rows = _rows_from_victim_table(victim_table)
-    referrals = prepare_referrals(rows, columns=columns, invalid_ssns=invalid_ssns)
-    result = match_referrals(referrals, person_id_prefix=person_id_prefix)
-
-    if _is_pandas_dataframe(victim_table):
-        referrals_with_person_id = victim_table.copy()
-        referrals_with_person_id["long_person_id"] = [
-            result.person_ids_by_index[index] for index in range(len(result.referrals))
-        ]
-        pair_matches = pd.DataFrame(result.to_pair_rows())
-    else:
-        referrals_with_person_id = result.to_referral_rows()
-        pair_matches = result.to_pair_rows()
-
-    return TableMatchOutput(
-        pair_matches=pair_matches,
-        referrals_with_person_id=referrals_with_person_id,
-        result=result,
-    )
+    return df
