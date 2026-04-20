@@ -1,360 +1,158 @@
-from __future__ import annotations
+To determine which of your 30 one-hot encoded features are the best predictors of target = 1, you have a binary classification + imbalanced dataset problem:
 
-import argparse
-from dataclasses import dataclass
-from pathlib import Path
-from typing import Iterable
+Target = 0 → 18k rows
 
+Target = 1 → 2.7k rows
+
+Features = 30 one-hot encoded binary columns (0/1)
+
+
+You want feature importance specifically for predicting the positive class (1).
+
+
+---
+
+Best Methods (ranked)
+
+✅ 1. Logistic Regression with Odds Ratios (Highly Recommended)
+
+Since features are one-hot encoded, logistic regression is excellent because coefficients are interpretable.
+
+What to look at:
+
+Positive coefficient = increases chance of target = 1
+
+Negative coefficient = lowers chance
+
+Larger absolute value = stronger predictor
+
+
+Python:
+
+from sklearn.linear_model import LogisticRegression
+from sklearn.preprocessing import StandardScaler
 import pandas as pd
+import numpy as np
+
+X = df.drop(columns='target')
+y = df['target']
+
+model = LogisticRegression(class_weight='balanced', max_iter=1000)
+model.fit(X, y)
+
+importance = pd.DataFrame({
+    'feature': X.columns,
+    'coef': model.coef_[0],
+    'odds_ratio': np.exp(model.coef_[0])
+})
+
+importance.sort_values('coef', ascending=False)
+
+Interpretation:
+
+If:
+
+Feature	Coef	Odds Ratio
+
+feature_A	1.2	3.3
 
 
-INDEX_START = pd.Timestamp("2023-01-01")
-INDEX_END = pd.Timestamp("2024-06-30")
-DATA_END = pd.Timestamp("2025-12-31")
-DEFAULT_WINDOWS = (365, 180, 90, 730)
+Then when feature_A = 1, odds of target=1 are 3.3x higher
 
 
-@dataclass(frozen=True)
-class CohortStats:
-    outcome_name: str
-    window_days: int
-    denominator_children: int
-    numerator_children: int
-    risk_percent: float
+---
+
+✅ 2. Mutual Information (Nonlinear Strength)
+
+Finds strongest relationship with target.
+
+from sklearn.feature_selection import mutual_info_classif
+
+mi = mutual_info_classif(X, y)
+
+pd.DataFrame({
+    'feature': X.columns,
+    'mi_score': mi
+}).sort_values('mi_score', ascending=False)
+
+Good for ranking.
 
 
-def _normalize_referrals(referrals: pd.DataFrame) -> pd.DataFrame:
-    required = {
-        "long_person_id",
-        "referral_id",
-        "referral_received_date",
-        "referral_type",
-    }
-    missing = required.difference(referrals.columns)
-    if missing:
-        raise ValueError(f"Missing referral columns: {sorted(missing)}")
+---
 
-    out = referrals.copy()
-    out["referral_received_date"] = pd.to_datetime(
-        out["referral_received_date"], errors="coerce"
-    )
-    out = out.dropna(subset=["long_person_id", "referral_id", "referral_received_date"])
-    out["referral_type"] = out["referral_type"].astype(str).str.upper().str.strip()
-    return out
+✅ 3. XGBoost / Random Forest Feature Importance
+
+Captures interactions.
+
+from xgboost import XGBClassifier
+
+model = XGBClassifier(scale_pos_weight=18000/2700)
+model.fit(X, y)
+
+importance = pd.DataFrame({
+    'feature': X.columns,
+    'importance': model.feature_importances_
+}).sort_values('importance', ascending=False)
 
 
-def _normalize_allegations(allegations: pd.DataFrame) -> pd.DataFrame:
-    required = {"referral_id", "allegation_id"}
-    missing = required.difference(allegations.columns)
-    if missing:
-        raise ValueError(f"Missing allegation columns: {sorted(missing)}")
+---
 
-    out = allegations.copy()
-    if "victim_flag" not in out.columns:
-        out["victim_flag"] = True
-    out["victim_flag"] = out["victim_flag"].fillna(False).astype(bool)
+🚨 Since You Care About Target=1 Specifically
 
-    if "allegation_date" in out.columns:
-        out["allegation_date"] = pd.to_datetime(out["allegation_date"], errors="coerce")
+Use:
 
-    if "gps_subcategory" not in out.columns:
-        out["gps_subcategory"] = pd.NA
+Precision / Recall based SHAP values (Best modern approach)
 
-    return out
+Train XGBoost then use SHAP to see which features push predictions toward class 1.
 
 
-def build_index_cohort(
-    referrals: pd.DataFrame,
-    same_day_rule: str = "allow",
-) -> pd.DataFrame:
-    """
-    Return one row per child for the first GPS referral in the index window.
+---
 
-    same_day_rule:
-      - "allow": later CPS events on the same date as index are eligible if they are
-        marked as post-index by date logic elsewhere.
-      - "exclude": same-day CPS events do not count as subsequent events.
-    """
-    if same_day_rule not in {"allow", "exclude"}:
-        raise ValueError("same_day_rule must be 'allow' or 'exclude'")
+🔥 My Recommendation For YOUR Dataset
 
-    refs = _normalize_referrals(referrals)
-    gps = refs.loc[
-        (refs["referral_type"] == "GPS")
-        & (refs["referral_received_date"] >= INDEX_START)
-        & (refs["referral_received_date"] <= INDEX_END)
-    ].copy()
+Because only 30 one-hot features:
 
-    gps = gps.sort_values(["long_person_id", "referral_received_date", "referral_id"])
-    cohort = gps.groupby("long_person_id", as_index=False).first()
-    cohort = cohort.rename(
-        columns={
-            "referral_id": "index_referral_id",
-            "referral_received_date": "index_date",
-        }
-    )
-    cohort["same_day_rule"] = same_day_rule
-    return cohort
+Run all 3:
+
+1. Logistic Regression → interpretable
+
+2. Mutual Info → dependency strength
+
+3. XGBoost + SHAP → nonlinear truth
+
+Then combine rankings.
 
 
-def build_cps_victim_events(
-    referrals: pd.DataFrame,
-    allegations: pd.DataFrame,
-    require_victim: bool = True,
-) -> pd.DataFrame:
-    """
-    Build candidate CPS events. Each row is a qualifying allegation attached to a CPS
-    referral. We later collapse to the first qualifying event per child.
-    """
-    refs = _normalize_referrals(referrals)
-    algs = _normalize_allegations(allegations)
+---
 
-    cps_refs = refs.loc[refs["referral_type"] == "CPS"].copy()
-    events = cps_refs.merge(algs, on="referral_id", how="inner", validate="one_to_many")
+VERY IMPORTANT: Class Imbalance
 
-    if require_victim:
-        events = events.loc[events["victim_flag"]].copy()
+Since 18k vs 2.7k:
 
-    # Use allegation_date when available; otherwise fall back to referral date.
-    if "allegation_date" in events.columns:
-        events["event_date"] = events["allegation_date"].fillna(events["referral_received_date"])
-    else:
-        events["event_date"] = events["referral_received_date"]
+Use:
 
-    events = events.dropna(subset=["long_person_id", "event_date"])
-    events = events.sort_values(["long_person_id", "event_date", "referral_id", "allegation_id"])
-    return events
+class_weight='balanced'
+
+or
+
+scale_pos_weight = 6.67
+
+Otherwise model favors class 0.
 
 
-def assign_primary_gps_subcategory(
-    cohort: pd.DataFrame,
-    allegations: pd.DataFrame,
-    rule: str = "first",
-) -> pd.DataFrame:
-    """
-    Attach one GPS subcategory to each index referral for reporting by subcategory.
+---
 
-    rule:
-      - "first": first non-null subcategory in sorted order within the index referral
-      - "alphabetical": alphabetically smallest non-null subcategory
-      - "multi_label": join all unique subcategories with " | "
-    """
-    if rule not in {"first", "alphabetical", "multi_label"}:
-        raise ValueError("subcategory rule must be 'first', 'alphabetical', or 'multi_label'")
+Quickest Answer (if you need immediate result)
 
-    algs = _normalize_allegations(allegations)
-    gps_algs = cohort[["index_referral_id"]].merge(
-        algs[["referral_id", "allegation_id", "gps_subcategory"]],
-        left_on="index_referral_id",
-        right_on="referral_id",
-        how="left",
-    )
-    gps_algs["gps_subcategory"] = gps_algs["gps_subcategory"].astype("string")
+Run this:
 
-    def pick(values: Iterable[str]) -> str | pd.NA:
-        cleaned = sorted({v.strip() for v in values if isinstance(v, str) and v.strip()})
-        if not cleaned:
-            return pd.NA
-        if rule == "first":
-            return cleaned[0]
-        if rule == "alphabetical":
-            return cleaned[0]
-        return " | ".join(cleaned)
+pd.crosstab(df['feature_A'], df['target'], normalize='index')
 
-    subcats = (
-        gps_algs.groupby("index_referral_id")["gps_subcategory"]
-        .apply(lambda s: pick(s.tolist()))
-        .rename("primary_gps_subcategory")
-        .reset_index()
-    )
+For each feature.
 
-    return cohort.merge(subcats, on="index_referral_id", how="left")
+If target=1 rate jumps when feature=1 → strong predictor.
 
 
-def compute_binary_outcome(
-    cohort: pd.DataFrame,
-    cps_events: pd.DataFrame,
-    window_days: int = 365,
-    same_day_rule: str = "exclude",
-) -> pd.DataFrame:
-    """
-    One row per child in the index cohort with a binary indicator for whether the child
-    had any qualifying CPS victim event within the follow-up window.
-    """
-    if same_day_rule not in {"allow", "exclude"}:
-        raise ValueError("same_day_rule must be 'allow' or 'exclude'")
+---
 
-    eligible = cohort.copy()
-    eligible["followup_end"] = eligible["index_date"] + pd.to_timedelta(window_days, unit="D")
-    eligible["followup_end"] = eligible["followup_end"].where(
-        eligible["followup_end"] <= DATA_END, DATA_END
-    )
-
-    merged = eligible.merge(
-        cps_events[
-            ["long_person_id", "referral_id", "allegation_id", "event_date"]
-        ],
-        on="long_person_id",
-        how="left",
-    )
-
-    if same_day_rule == "exclude":
-        after_index = merged["event_date"] > merged["index_date"]
-    else:
-        after_index = merged["event_date"] >= merged["index_date"]
-
-    in_window = after_index & (merged["event_date"] <= merged["followup_end"])
-    qualifying = merged.loc[in_window].copy()
-
-    first_events = (
-        qualifying.sort_values(
-            ["long_person_id", "event_date", "referral_id", "allegation_id"]
-        )
-        .groupby("long_person_id", as_index=False)
-        .first()
-        .rename(
-            columns={
-                "referral_id": "first_cps_referral_id",
-                "allegation_id": "first_cps_allegation_id",
-                "event_date": "first_cps_event_date",
-            }
-        )
-    )
-
-    result = eligible.merge(first_events, on="long_person_id", how="left")
-    result["had_cps_within_window"] = result["first_cps_event_date"].notna()
-    return result
-
-
-def summarize_outcome(
-    outcome_df: pd.DataFrame,
-    window_days: int,
-    outcome_name: str,
-) -> CohortStats:
-    denominator = int(outcome_df["long_person_id"].nunique())
-    numerator = int(outcome_df.loc[outcome_df["had_cps_within_window"], "long_person_id"].nunique())
-    risk = (numerator / denominator * 100.0) if denominator else 0.0
-    return CohortStats(
-        outcome_name=outcome_name,
-        window_days=window_days,
-        denominator_children=denominator,
-        numerator_children=numerator,
-        risk_percent=risk,
-    )
-
-
-def summarize_by_subcategory(outcome_df: pd.DataFrame) -> pd.DataFrame:
-    grouped = (
-        outcome_df.groupby("primary_gps_subcategory", dropna=False)
-        .agg(
-            denominator_children=("long_person_id", "nunique"),
-            numerator_children=("had_cps_within_window", "sum"),
-        )
-        .reset_index()
-    )
-    grouped["risk_percent"] = (
-        grouped["numerator_children"] / grouped["denominator_children"] * 100.0
-    ).round(3)
-    grouped["small_cell_flag"] = grouped["denominator_children"] < 30
-    return grouped.sort_values(
-        ["small_cell_flag", "risk_percent"], ascending=[False, False]
-    )
-
-
-def run_sensitivity_checks(
-    referrals: pd.DataFrame,
-    allegations: pd.DataFrame,
-) -> dict[str, pd.DataFrame]:
-    """
-    Returns a small bundle of sensitivity outputs:
-      - 365-day main result
-      - alternate same-day sequencing rule
-      - alternate window lengths
-      - alternate subcategory assignment rule
-      - duplicate diagnostics
-    """
-    cohort = build_index_cohort(referrals, same_day_rule="exclude")
-    cps_events = build_cps_victim_events(referrals, allegations, require_victim=True)
-
-    main = assign_primary_gps_subcategory(cohort, allegations, rule="first")
-    main = compute_binary_outcome(main, cps_events, window_days=365, same_day_rule="exclude")
-
-    alt_same_day = assign_primary_gps_subcategory(cohort, allegations, rule="first")
-    alt_same_day = compute_binary_outcome(
-        alt_same_day, cps_events, window_days=365, same_day_rule="allow"
-    )
-
-    alt_subcat = assign_primary_gps_subcategory(cohort, allegations, rule="multi_label")
-    alt_subcat = compute_binary_outcome(
-        alt_subcat, cps_events, window_days=365, same_day_rule="exclude"
-    )
-
-    windows = []
-    for days in DEFAULT_WINDOWS:
-        tmp = assign_primary_gps_subcategory(cohort, allegations, rule="first")
-        tmp = compute_binary_outcome(tmp, cps_events, window_days=days, same_day_rule="exclude")
-        stat = summarize_outcome(tmp, window_days=days, outcome_name=f"{days}-day risk")
-        windows.append(stat.__dict__)
-
-    duplicate_referrals = (
-        _normalize_referrals(referrals)
-        .groupby(["long_person_id", "referral_id"], as_index=False)
-        .size()
-        .rename(columns={"size": "row_count"})
-    )
-    duplicate_referrals = duplicate_referrals.loc[duplicate_referrals["row_count"] > 1]
-
-    duplicate_allegations = (
-        _normalize_allegations(allegations)
-        .groupby(["referral_id", "allegation_id"], as_index=False)
-        .size()
-        .rename(columns={"size": "row_count"})
-    )
-    duplicate_allegations = duplicate_allegations.loc[duplicate_allegations["row_count"] > 1]
-
-    summary_rows = [
-        summarize_outcome(main, 365, "main_365_exclude_same_day").__dict__,
-        summarize_outcome(alt_same_day, 365, "sensitivity_365_allow_same_day").__dict__,
-        summarize_outcome(alt_subcat, 365, "sensitivity_365_multi_label_subcategory").__dict__,
-    ]
-
-    return {
-        "summary": pd.DataFrame(summary_rows),
-        "window_sensitivity": pd.DataFrame(windows),
-        "main_by_subcategory": summarize_by_subcategory(main),
-        "alt_subcategory_assignment": summarize_by_subcategory(alt_subcat),
-        "duplicate_referral_keys": duplicate_referrals,
-        "duplicate_allegation_keys": duplicate_allegations,
-        "main_child_level_output": main.sort_values(["index_date", "long_person_id"]),
-    }
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Compute 1-year standardized follow-up and sensitivity checks."
-    )
-    parser.add_argument("--referrals", required=True, help="Path to referral-level CSV")
-    parser.add_argument("--allegations", required=True, help="Path to allegation-level CSV")
-    parser.add_argument(
-        "--outdir",
-        default="outputs",
-        help="Directory where CSV outputs should be written",
-    )
-    args = parser.parse_args()
-
-    referrals = pd.read_csv(args.referrals)
-    allegations = pd.read_csv(args.allegations)
-
-    outputs = run_sensitivity_checks(referrals, allegations)
-    outdir = Path(args.outdir)
-    outdir.mkdir(parents=True, exist_ok=True)
-
-    for name, df in outputs.items():
-        df.to_csv(outdir / f"{name}.csv", index=False)
-
-    print(f"Wrote {len(outputs)} output files to {outdir}")
-
-
-if __name__ == "__main__":
-    main()
-
+If you send me sample feature names, I can also tell you how to statistically rank one-hot features specifically for rare positive event prediction using WOE / IV, which is often best for binary encoded predictors.
