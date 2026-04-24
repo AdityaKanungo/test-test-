@@ -1,158 +1,103 @@
-To determine which of your 30 one-hot encoded features are the best predictors of target = 1, you have a binary classification + imbalanced dataset problem:
-
-Target = 0 → 18k rows
-
-Target = 1 → 2.7k rows
-
-Features = 30 one-hot encoded binary columns (0/1)
-
-
-You want feature importance specifically for predicting the positive class (1).
-
-
----
-
-Best Methods (ranked)
-
-✅ 1. Logistic Regression with Odds Ratios (Highly Recommended)
-
-Since features are one-hot encoded, logistic regression is excellent because coefficients are interpretable.
-
-What to look at:
-
-Positive coefficient = increases chance of target = 1
-
-Negative coefficient = lowers chance
-
-Larger absolute value = stronger predictor
-
-
-Python:
-
-from sklearn.linear_model import LogisticRegression
-from sklearn.preprocessing import StandardScaler
 import pandas as pd
-import numpy as np
 
-X = df.drop(columns='target')
-y = df['target']
+# df = pd.read_csv("your_file.csv")
 
-model = LogisticRegression(class_weight='balanced', max_iter=1000)
-model.fit(X, y)
+# Convert date columns
+df["referral_received_date"] = pd.to_datetime(df["referral_received_date"])
+df["incident_begin_date"] = pd.to_datetime(df["incident_begin_date"])
 
-importance = pd.DataFrame({
-    'feature': X.columns,
-    'coef': model.coef_[0],
-    'odds_ratio': np.exp(model.coef_[0])
-})
+# 1) Collapse to one row per child-referral
+#    Use the earliest incident date within each referral
+referral_level = (
+    df.groupby(
+        [
+            "long_person_id",
+            "referral_id",
+            "referral_type",
+            "is_index",
+            "referral_sequence_type",
+            "referral_sequence",
+            "referral_received_date",
+        ],
+        as_index=False
+    )
+    .agg(
+        referral_incident_begin_date=("incident_begin_date", "min")
+    )
+)
 
-importance.sort_values('coef', ascending=False)
+# 2) Get GPS index referral for each child
+gps_index = (
+    referral_level[
+        (referral_level["referral_type"] == "GPS") &
+        (referral_level["is_index"] == "Y")
+    ]
+    .rename(columns={
+        "referral_id": "gps_referral_id",
+        "referral_received_date": "gps_referral_date",
+        "referral_incident_begin_date": "gps_incident_start_date"
+    })
+)
 
-Interpretation:
+# 3) Get first subsequent CPS referral for each child
+first_cps = (
+    referral_level[
+        (referral_level["referral_type"] == "CPS") &
+        (referral_level["referral_sequence_type"] == "Subsequent")
+    ]
+    .sort_values(["long_person_id", "referral_received_date", "referral_sequence"])
+    .groupby("long_person_id", as_index=False)
+    .first()
+    .rename(columns={
+        "referral_id": "cps_referral_id",
+        "referral_received_date": "cps_referral_date",
+        "referral_incident_begin_date": "cps_incident_start_date"
+    })
+)
 
-If:
+# 4) Join GPS index to first subsequent CPS
+result = gps_index.merge(
+    first_cps[
+        [
+            "long_person_id",
+            "cps_referral_id",
+            "cps_referral_date",
+            "cps_incident_start_date"
+        ]
+    ],
+    on="long_person_id",
+    how="left"
+)
 
-Feature	Coef	Odds Ratio
+# 5) Create date-difference columns
+result["days_gps_referral_to_cps_referral"] = (
+    result["cps_referral_date"] - result["gps_referral_date"]
+).dt.days
 
-feature_A	1.2	3.3
+result["days_gps_referral_to_cps_incident"] = (
+    result["cps_incident_start_date"] - result["gps_referral_date"]
+).dt.days
 
+result["days_gps_incident_to_cps_incident"] = (
+    result["cps_incident_start_date"] - result["gps_incident_start_date"]
+).dt.days
 
-Then when feature_A = 1, odds of target=1 are 3.3x higher
+# Final columns
+result = result[
+    [
+        "long_person_id",
+        "gps_referral_id",
+        "gps_referral_date",
+        "gps_incident_start_date",
+        "cps_referral_id",
+        "cps_referral_date",
+        "cps_incident_start_date",
+        "days_gps_referral_to_cps_referral",
+        "days_gps_referral_to_cps_incident",
+        "days_gps_incident_to_cps_incident"
+    ]
+]
 
+result
 
----
-
-✅ 2. Mutual Information (Nonlinear Strength)
-
-Finds strongest relationship with target.
-
-from sklearn.feature_selection import mutual_info_classif
-
-mi = mutual_info_classif(X, y)
-
-pd.DataFrame({
-    'feature': X.columns,
-    'mi_score': mi
-}).sort_values('mi_score', ascending=False)
-
-Good for ranking.
-
-
----
-
-✅ 3. XGBoost / Random Forest Feature Importance
-
-Captures interactions.
-
-from xgboost import XGBClassifier
-
-model = XGBClassifier(scale_pos_weight=18000/2700)
-model.fit(X, y)
-
-importance = pd.DataFrame({
-    'feature': X.columns,
-    'importance': model.feature_importances_
-}).sort_values('importance', ascending=False)
-
-
----
-
-🚨 Since You Care About Target=1 Specifically
-
-Use:
-
-Precision / Recall based SHAP values (Best modern approach)
-
-Train XGBoost then use SHAP to see which features push predictions toward class 1.
-
-
----
-
-🔥 My Recommendation For YOUR Dataset
-
-Because only 30 one-hot features:
-
-Run all 3:
-
-1. Logistic Regression → interpretable
-
-2. Mutual Info → dependency strength
-
-3. XGBoost + SHAP → nonlinear truth
-
-Then combine rankings.
-
-
----
-
-VERY IMPORTANT: Class Imbalance
-
-Since 18k vs 2.7k:
-
-Use:
-
-class_weight='balanced'
-
-or
-
-scale_pos_weight = 6.67
-
-Otherwise model favors class 0.
-
-
----
-
-Quickest Answer (if you need immediate result)
-
-Run this:
-
-pd.crosstab(df['feature_A'], df['target'], normalize='index')
-
-For each feature.
-
-If target=1 rate jumps when feature=1 → strong predictor.
-
-
----
-
-If you send me sample feature names, I can also tell you how to statistically rank one-hot features specifically for rare positive event prediction using WOE / IV, which is often best for binary encoded predictors.
+This gives one row per child’s GPS index referral, matched to their first subsequent CPS referral, using the earliest incident date within each referral.
