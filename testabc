@@ -2,12 +2,12 @@ import pandas as pd
 
 # df = pd.read_csv("your_file.csv")
 
-# Convert date columns
+# Convert dates
 df["referral_received_date"] = pd.to_datetime(df["referral_received_date"])
 df["incident_begin_date"] = pd.to_datetime(df["incident_begin_date"])
 
-# 1) Collapse to one row per child-referral
-#    Use the earliest incident date within each referral
+# Step 1: Collapse to one row per child-referral
+# Use earliest incident date within each referral
 referral_level = (
     df.groupby(
         [
@@ -26,7 +26,7 @@ referral_level = (
     )
 )
 
-# 2) Get GPS index referral for each child
+# Step 2: Get GPS index referral for each child
 gps_index = (
     referral_level[
         (referral_level["referral_type"] == "GPS") &
@@ -39,12 +39,33 @@ gps_index = (
     })
 )
 
-# 3) Get first subsequent CPS referral for each child
+# Step 3: Get all CPS referrals
+cps_referrals = referral_level[
+    referral_level["referral_type"] == "CPS"
+].copy()
+
+# Step 4: Match CPS referrals to each child's GPS index referral
+cps_after_gps = cps_referrals.merge(
+    gps_index[
+        [
+            "long_person_id",
+            "gps_referral_id",
+            "gps_referral_date",
+            "gps_incident_start_date"
+        ]
+    ],
+    on="long_person_id",
+    how="inner"
+)
+
+# Step 5: Keep only CPS referrals after the GPS index referral
+cps_after_gps = cps_after_gps[
+    cps_after_gps["referral_received_date"] > cps_after_gps["gps_referral_date"]
+]
+
+# Step 6: Keep only the first subsequent CPS referral per child
 first_cps = (
-    referral_level[
-        (referral_level["referral_type"] == "CPS") &
-        (referral_level["referral_sequence_type"] == "Subsequent")
-    ]
+    cps_after_gps
     .sort_values(["long_person_id", "referral_received_date", "referral_sequence"])
     .groupby("long_person_id", as_index=False)
     .first()
@@ -55,7 +76,7 @@ first_cps = (
     })
 )
 
-# 4) Join GPS index to first subsequent CPS
+# Step 7: Join GPS index referral to first subsequent CPS referral
 result = gps_index.merge(
     first_cps[
         [
@@ -69,7 +90,7 @@ result = gps_index.merge(
     how="left"
 )
 
-# 5) Create date-difference columns
+# Step 8: Create date difference columns
 result["days_gps_referral_to_cps_referral"] = (
     result["cps_referral_date"] - result["gps_referral_date"]
 ).dt.days
@@ -82,7 +103,7 @@ result["days_gps_incident_to_cps_incident"] = (
     result["cps_incident_start_date"] - result["gps_incident_start_date"]
 ).dt.days
 
-# Final columns
+# Step 9: Select final columns
 result = result[
     [
         "long_person_id",
@@ -99,5 +120,3 @@ result = result[
 ]
 
 result
-
-This gives one row per child’s GPS index referral, matched to their first subsequent CPS referral, using the earliest incident date within each referral.
