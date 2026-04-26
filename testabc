@@ -2,121 +2,51 @@ import pandas as pd
 
 # df = pd.read_csv("your_file.csv")
 
-# Convert dates
-df["referral_received_date"] = pd.to_datetime(df["referral_received_date"])
-df["incident_begin_date"] = pd.to_datetime(df["incident_begin_date"])
+# Ensure dates are datetime
+date_cols = ["referral_received_date", "incident_begin_date"]
+for col in date_cols:
+    df[col] = pd.to_datetime(df[col], errors="coerce")
 
-# Step 1: Collapse to one row per child-referral
-# Use earliest incident date within each referral
-referral_level = (
-    df.groupby(
-        [
-            "long_person_id",
-            "referral_id",
-            "referral_type",
-            "is_index",
-            "referral_sequence_type",
-            "referral_sequence",
-            "referral_received_date",
-        ],
-        as_index=False
-    )
-    .agg(
-        referral_incident_begin_date=("incident_begin_date", "min")
-    )
-)
+# Keep only children who have a subsequent CPS referral
+children_with_subseq_cps = df.loc[
+    (df["referral_type"].eq("CPS")) &
+    (df["referral_sequence_type"].eq("Subsequent")),
+    "long_person_id"
+].unique()
 
-# Step 2: Get GPS index referral for each child
+df_sub = df[df["long_person_id"].isin(children_with_subseq_cps)].copy()
+
+# Earliest GPS index referral per child
 gps_index = (
-    referral_level[
-        (referral_level["referral_type"] == "GPS") &
-        (referral_level["is_index"] == "Y")
+    df_sub[
+        (df_sub["referral_type"].eq("GPS")) &
+        (df_sub["referral_sequence_type"].eq("Index"))
     ]
-    .rename(columns={
-        "referral_id": "gps_referral_id",
-        "referral_received_date": "gps_referral_date",
-        "referral_incident_begin_date": "gps_incident_start_date"
-    })
+    .groupby("long_person_id", as_index=False)
+    .agg(
+        gps_referral_received_date=("referral_received_date", "min"),
+        gps_incident_begin_date=("incident_begin_date", "min")
+    )
 )
 
-# Step 3: Get all CPS referrals
-cps_referrals = referral_level[
-    referral_level["referral_type"] == "CPS"
-].copy()
+# Earliest subsequent CPS referral per child
+cps_subseq = (
+    df_sub[
+        (df_sub["referral_type"].eq("CPS")) &
+        (df_sub["referral_sequence_type"].eq("Subsequent"))
+    ]
+    .groupby("long_person_id", as_index=False)
+    .agg(
+        cps_referral_received_date=("referral_received_date", "min"),
+        cps_incident_begin_date=("incident_begin_date", "min")
+    )
+)
 
-# Step 4: Match CPS referrals to each child's GPS index referral
-cps_after_gps = cps_referrals.merge(
-    gps_index[
-        [
-            "long_person_id",
-            "gps_referral_id",
-            "gps_referral_date",
-            "gps_incident_start_date"
-        ]
-    ],
+# Final dataset
+final_df = gps_index.merge(
+    cps_subseq,
     on="long_person_id",
     how="inner"
 )
 
-# Step 5: Keep only CPS referrals after the GPS index referral
-cps_after_gps = cps_after_gps[
-    cps_after_gps["referral_received_date"] > cps_after_gps["gps_referral_date"]
-]
-
-# Step 6: Keep only the first subsequent CPS referral per child
-first_cps = (
-    cps_after_gps
-    .sort_values(["long_person_id", "referral_received_date", "referral_sequence"])
-    .groupby("long_person_id", as_index=False)
-    .first()
-    .rename(columns={
-        "referral_id": "cps_referral_id",
-        "referral_received_date": "cps_referral_date",
-        "referral_incident_begin_date": "cps_incident_start_date"
-    })
-)
-
-# Step 7: Join GPS index referral to first subsequent CPS referral
-result = gps_index.merge(
-    first_cps[
-        [
-            "long_person_id",
-            "cps_referral_id",
-            "cps_referral_date",
-            "cps_incident_start_date"
-        ]
-    ],
-    on="long_person_id",
-    how="left"
-)
-
-# Step 8: Create date difference columns
-result["days_gps_referral_to_cps_referral"] = (
-    result["cps_referral_date"] - result["gps_referral_date"]
-).dt.days
-
-result["days_gps_referral_to_cps_incident"] = (
-    result["cps_incident_start_date"] - result["gps_referral_date"]
-).dt.days
-
-result["days_gps_incident_to_cps_incident"] = (
-    result["cps_incident_start_date"] - result["gps_incident_start_date"]
-).dt.days
-
-# Step 9: Select final columns
-result = result[
-    [
-        "long_person_id",
-        "gps_referral_id",
-        "gps_referral_date",
-        "gps_incident_start_date",
-        "cps_referral_id",
-        "cps_referral_date",
-        "cps_incident_start_date",
-        "days_gps_referral_to_cps_referral",
-        "days_gps_referral_to_cps_incident",
-        "days_gps_incident_to_cps_incident"
-    ]
-]
-
-result
+final_df
