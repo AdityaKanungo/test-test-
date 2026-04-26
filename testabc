@@ -1,52 +1,43 @@
-import pandas as pd
+import matplotlib.pyplot as plt
 
-# df = pd.read_csv("your_file.csv")
+# Make sure date columns are datetime
+date_cols = [
+    "gps_referral_received_date",
+    "gps_incident_begin_date",
+    "cps_referral_received_date",
+    "cps_incident_begin_date"
+]
 
-# Ensure dates are datetime
-date_cols = ["referral_received_date", "incident_begin_date"]
 for col in date_cols:
-    df[col] = pd.to_datetime(df[col], errors="coerce")
+    final_df[col] = pd.to_datetime(final_df[col], errors="coerce")
 
-# Keep only children who have a subsequent CPS referral
-children_with_subseq_cps = df.loc[
-    (df["referral_type"].eq("CPS")) &
-    (df["referral_sequence_type"].eq("Subsequent")),
-    "long_person_id"
-].unique()
+# Calculate day differences
+final_df["days_gps_ref_to_cps_ref"] = (
+    final_df["cps_referral_received_date"] - final_df["gps_referral_received_date"]
+).dt.days
 
-df_sub = df[df["long_person_id"].isin(children_with_subseq_cps)].copy()
+final_df["days_gps_ref_to_cps_incident"] = (
+    final_df["cps_incident_begin_date"] - final_df["gps_referral_received_date"]
+).dt.days
 
-# Earliest GPS index referral per child
-gps_index = (
-    df_sub[
-        (df_sub["referral_type"].eq("GPS")) &
-        (df_sub["referral_sequence_type"].eq("Index"))
-    ]
-    .groupby("long_person_id", as_index=False)
-    .agg(
-        gps_referral_received_date=("referral_received_date", "min"),
-        gps_incident_begin_date=("incident_begin_date", "min")
-    )
-)
+final_df["days_gps_incident_to_cps_incident"] = (
+    final_df["cps_incident_begin_date"] - final_df["gps_incident_begin_date"]
+).dt.days
 
-# Earliest subsequent CPS referral per child
-cps_subseq = (
-    df_sub[
-        (df_sub["referral_type"].eq("CPS")) &
-        (df_sub["referral_sequence_type"].eq("Subsequent"))
-    ]
-    .groupby("long_person_id", as_index=False)
-    .agg(
-        cps_referral_received_date=("referral_received_date", "min"),
-        cps_incident_begin_date=("incident_begin_date", "min")
-    )
-)
+# Histograms
+hist_vars = {
+    "days_gps_ref_to_cps_ref": "GPS referral date to CPS referral date",
+    "days_gps_ref_to_cps_incident": "GPS referral date to CPS incident start date",
+    "days_gps_incident_to_cps_incident": "GPS incident start date to CPS incident start date"
+}
 
-# Final dataset
-final_df = gps_index.merge(
-    cps_subseq,
-    on="long_person_id",
-    how="inner"
-)
+for col, title in hist_vars.items():
+    plt.figure(figsize=(9, 5))
+    plt.hist(final_df[col].dropna(), bins=50)
+    plt.axvline(0, linestyle="--")
+    plt.title(title)
+    plt.xlabel("Days from GPS to CPS")
+    plt.ylabel("Number of children")
+    plt.show()
 
-final_df
+Negative values will appear automatically if CPS happened before GPS.
