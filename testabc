@@ -1,17 +1,30 @@
-install.packages("marginaleffects")
-library(marginaleffects)
+ame_results <- data.frame()
 
-# abuse columns used in the model
-abuse_cols <- setdiff(names(model_df), "CPS")
+for (var in abuse_cols) {
+  
+  df_present <- model_df
+  df_absent <- model_df
+  
+  df_present[[var]] <- 1
+  df_absent[[var]] <- 0
+  
+  p_present <- mean(predict(model, newdata = df_present, type = "response"))
+  p_absent <- mean(predict(model, newdata = df_absent, type = "response"))
+  
+  ame_results <- rbind(
+    ame_results,
+    data.frame(
+      subcategory = var,
+      prob_if_present = p_present,
+      prob_if_absent = p_absent,
+      difference = p_present - p_absent
+    )
+  )
+}
 
-# Adjusted marginal predicted probabilities
-ampp <- avg_predictions(
-  model,
-  variables = abuse_cols,
-  type = "response"
-)
+ame_results[, 2:4] <- round(ame_results[, 2:4] * 100, 2)
 
-print(ampp)
+print(ame_results)
 
 
 
