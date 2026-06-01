@@ -1,55 +1,106 @@
-import pandas as pd
+# Logistic regression in R
+# df = your one-hot encoded dataset
+# CPS = binary target variable: 0/1
 
-# Abuse indicator columns
-abuse_cols = [
-    'abandonment',
-    'adoption_disruption_dissolution',
-    'behavioral_health_concerns_child',
-    'behavioral_health_concerns_parent_caregiver',
-    'child_sexually_acting_out',
-    'domestic_violence',
-    'homelessness',
-    'inadequate_basic_needs_clothing_food_hygiene',
-    'inadequate_education',
-    'inadequate_health_care',
-    'inadequate_nurturing_affection',
-    'inadequate_shelter_housing',
-    'inappropriate_discipline',
-    'isolation',
-    'lack_of_caregiver',
-    'lack_of_supervision',
-    'other',
-    'substance_use_by_child',
-    'substance_use_by_parent_caregiver',
-    'truancy'
-]
-
-results_list = []
-
-for abuse in abuse_cols:
-
-    df_temp = df.copy()
-
-    # Force abuse category to be present
-    df_temp[abuse] = 1
-
-    # Predict probability
-    probs = result.predict(df_temp)
-
-    results_list.append({
-        'subcategory': abuse,
-        'avg_marginal_pred_prob': probs.mean()
-    })
-
-ampp_df = pd.DataFrame(results_list)
-
-ampp_df['avg_marginal_pred_prob'] = (
-    ampp_df['avg_marginal_pred_prob'] * 100
+# 1. Abuse subcategory columns
+abuse_cols <- c(
+  "abandonment",
+  "adoption_disruption_dissolution",
+  "behavioral_health_concerns_child",
+  "behavioral_health_concerns_parent_caregiver",
+  "child_1_year_old_who_was_born_and_identified_as_being_affected_by_substance_use_or_withdrawal_symptoms_resulting_from_prenatal_drug_exposure",
+  "child_1_year_old_who_is_born_and_identified_as_having_fetal_alcohol_spectrum_disorder",
+  "child_sexually_acting_out",
+  "conduct_by_parent_caregiver_or_household_member_that_places_child_at_risk_or_fails_to_protect_the_child_from_others",
+  "delinquent_act_by_a_child_under_10_years_of_age",
+  "domestic_violence",
+  "expulsion_from_home_lockout",
+  "homelessness",
+  "inadequate_basic_needs_clothing_food_hygiene",
+  "inadequate_education",
+  "inadequate_health_care",
+  "inadequate_nurturing_affection",
+  "inadequate_shelter_housing",
+  "inappropriate_discipline",
+  "intellectual_disabilities_child",
+  "intellectual_disabilities_parent_caregiver",
+  "isolation",
+  "lack_of_caregiver",
+  "lack_of_supervision",
+  "other",
+  "placed_for_care_adoption_in_violation_of_law",
+  "substance_use_by_child",
+  "substance_use_by_parent_caregiver",
+  "truancy",
+  "ungovernable_child_child_behavior_problems_parent_child_conflict"
 )
 
-ampp_df = ampp_df.sort_values(
-    'avg_marginal_pred_prob',
-    ascending=False
+# 2. Build formula
+formula_text <- paste("CPS ~", paste(abuse_cols, collapse = " + "))
+model_formula <- as.formula(formula_text)
+
+# 3. Fit logistic regression
+model <- glm(
+  model_formula,
+  data = df,
+  family = binomial(link = "logit")
 )
 
-print(ampp_df)
+# 4. Model summary like statsmodels
+summary(model)
+
+# 5. Create coefficient table
+coef_table <- as.data.frame(summary(model)$coefficients)
+
+coef_table$subcategory <- rownames(coef_table)
+
+colnames(coef_table) <- c(
+  "coef",
+  "std_err",
+  "z",
+  "p_value",
+  "subcategory"
+)
+
+# 6. Confidence intervals
+ci <- confint.default(model)
+
+coef_table$ci_lower <- ci[, 1]
+coef_table$ci_upper <- ci[, 2]
+
+# 7. Odds ratio
+coef_table$odds_ratio <- exp(coef_table$coef)
+
+# 8. Predicted probability like your screenshot
+# This uses intercept + coefficient for each subcategory
+coef_table$predicted_probability <- plogis(coef_table$coef[coef_table$subcategory == "(Intercept)"] + coef_table$coef)
+
+# For intercept row, probability should be intercept only
+coef_table$predicted_probability[coef_table$subcategory == "(Intercept)"] <-
+  plogis(coef_table$coef[coef_table$subcategory == "(Intercept)"])
+
+# Convert to %
+coef_table$predicted_probability_percent <- round(coef_table$predicted_probability * 100, 2)
+
+# 9. Clean final table
+final_results <- coef_table[, c(
+  "subcategory",
+  "coef",
+  "std_err",
+  "z",
+  "p_value",
+  "ci_lower",
+  "ci_upper",
+  "odds_ratio",
+  "predicted_probability_percent"
+)]
+
+final_results$odds_ratio <- round(final_results$odds_ratio, 3)
+final_results$coef <- round(final_results$coef, 3)
+final_results$std_err <- round(final_results$std_err, 3)
+final_results$z <- round(final_results$z, 3)
+final_results$p_value <- round(final_results$p_value, 3)
+final_results$ci_lower <- round(final_results$ci_lower, 3)
+final_results$ci_upper <- round(final_results$ci_upper, 3)
+
+print(final_results)
