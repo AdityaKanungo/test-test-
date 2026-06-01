@@ -1,3 +1,43 @@
+# abuse columns
+abuse_cols <- setdiff(names(model_df), "CPS")
+
+ampp_results <- data.frame()
+
+for (var in abuse_cols) {
+  
+  temp_df <- model_df
+  
+  # set this abuse category = 1 for everyone
+  temp_df[[var]] <- 1
+  
+  # predict probability
+  probs <- predict(
+    model,
+    newdata = temp_df,
+    type = "response"
+  )
+  
+  # average predicted probability
+  ampp_results <- rbind(
+    ampp_results,
+    data.frame(
+      subcategory = var,
+      adjusted_predicted_probability = mean(probs)
+    )
+  )
+}
+
+ampp_results$adjusted_predicted_probability_percent <-
+  round(ampp_results$adjusted_predicted_probability * 100, 2)
+
+ampp_results <- ampp_results[
+  order(-ampp_results$adjusted_predicted_probability_percent),
+]
+
+print(ampp_results)
+
+
+
 ame_results <- data.frame()
 
 for (var in abuse_cols) {
