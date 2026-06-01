@@ -1,19 +1,37 @@
 import pandas as pd
 
+# X should already include const
+# result = fitted statsmodels Logit model
+
+abuse_columns = [col for col in X.columns if col != "const"]
+
 results = []
 
 for col in abuse_columns:
-
+    
     X_temp = X.copy()
-
-    # Set abuse category present for everyone
+    
+    # set this subcategory as present for everyone
     X_temp[col] = 1
-
+    
+    # predict probability
     probs = result.predict(X_temp)
-
+    
     results.append({
         "subcategory": col,
-        "predicted_probability": probs.mean()
+        "adjusted_predicted_probability": probs.mean(),
+        "adjusted_predicted_probability_percent": probs.mean() * 100
     })
 
-pp_df = pd.DataFrame(results)
+ampp_df = pd.DataFrame(results)
+
+ampp_df["adjusted_predicted_probability_percent"] = (
+    ampp_df["adjusted_predicted_probability_percent"].round(2)
+)
+
+ampp_df = ampp_df.sort_values(
+    "adjusted_predicted_probability_percent",
+    ascending=False
+)
+
+print(ampp_df)
