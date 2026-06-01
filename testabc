@@ -1,4 +1,5 @@
 library(marginaleffects)
+library(dplyr)
 
 abuse_cols <- setdiff(names(model_df), "CPS")
 
@@ -14,12 +15,23 @@ for (var in abuse_cols) {
     type = "response"
   )
   
+  temp <- as.data.frame(temp)
+  temp$subcategory <- var
+  
   ampp_list[[var]] <- temp
 }
 
-ampp <- do.call(rbind, ampp_list)
+ampp <- bind_rows(ampp_list)
 
-print(ampp)
+ampp_final <- ampp %>%
+  select(subcategory, estimate, std.error, conf.low, conf.high, p.value) %>%
+  mutate(
+    adjusted_predicted_probability_percent = round(estimate * 100, 2),
+    conf.low_percent = round(conf.low * 100, 2),
+    conf.high_percent = round(conf.high * 100, 2)
+  )
+
+print(ampp_final)
 
 
 
