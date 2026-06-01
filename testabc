@@ -1,121 +1,44 @@
-# Full R code to replicate Python statsmodels Logit setup
-# Python equivalent:
-# X = one_hot_df.drop(columns = c("CPS", "long_person_id"))
-# y = one_hot_df["CPS"]
-# X = sm.add_constant(X, has_constant = "add")
-# result = sm.Logit(y, X).fit(method = "lbfgs", maxiter = 100)
-
-# -----------------------------
-# 1. Prepare data
-# -----------------------------
-
-# df = your one-hot encoded dataset
-
-target_col <- "CPS"
-id_cols <- c("long_person_id")
-
-x_cols <- setdiff(names(df), c(target_col, id_cols))
-
-model_df <- df[, c(target_col, x_cols)]
-
-# Convert CPS and predictors to numeric
-model_df[] <- lapply(model_df, function(x) {
-  if (is.factor(x)) {
-    as.numeric(as.character(x))
-  } else if (is.character(x)) {
-    as.numeric(x)
-  } else {
-    as.numeric(x)
-  }
-})
-
-# Drop rows with missing values
-model_df <- na.omit(model_df)
-
-# -----------------------------
-# 2. Fit logistic regression
-# -----------------------------
-
-formula_text <- paste(target_col, "~", paste(x_cols, collapse = " + "))
-model_formula <- as.formula(formula_text)
-
-model <- glm(
-  model_formula,
-  data = model_df,
-  family = binomial(link = "logit"),
-  control = glm.control(maxit = 100)
+# Hessian for standard errors
+fit_hessian <- optim(
+  par = coef_values,
+  fn = neg_loglik,
+  X = X,
+  y = y,
+  method = "L-BFGS-B",
+  hessian = TRUE,
+  control = list(maxit = 100)
 )
 
-summary(model)
+vcov_mat <- solve(fit_hessian$hessian)
+std_err <- sqrt(diag(vcov_mat))
 
-# -----------------------------
-# 3. Create coefficient table
-# -----------------------------
+z_values <- coef_values / std_err
+p_values <- 2 * (1 - pnorm(abs(z_values)))
 
-coef_table <- as.data.frame(summary(model)$coefficients)
+ci_lower <- coef_values - 1.96 * std_err
+ci_upper <- coef_values + 1.96 * std_err
 
-coef_table$subcategory <- rownames(coef_table)
+odds_ratio <- exp(coef_values)
 
-colnames(coef_table) <- c(
-  "coef",
-  "std_err",
-  "z",
-  "p_value",
-  "subcategory"
-)
+intercept <- coef_values["const"]
 
-# Confidence intervals like statsmodels table
-ci <- confint.default(model)
-
-coef_table$ci_lower <- ci[, 1]
-coef_table$ci_upper <- ci[, 2]
-
-# Odds ratio
-coef_table$odds_ratio <- exp(coef_table$coef)
-
-# Screenshot-style predicted probability
-# Intercept only for baseline
-# Intercept + coefficient for each subcategory
-intercept <- coef(model)[["(Intercept)"]]
-
-coef_table$predicted_probability <- ifelse(
-  coef_table$subcategory == "(Intercept)",
+predicted_probability <- ifelse(
+  names(coef_values) == "const",
   plogis(intercept),
-  plogis(intercept + coef_table$coef)
+  plogis(intercept + coef_values)
 )
 
-coef_table$predicted_probability_percent <- round(
-  coef_table$predicted_probability * 100,
-  2
+final_results <- data.frame(
+  subcategory = names(coef_values),
+  coef = round(coef_values, 3),
+  std_err = round(std_err, 3),
+  z = round(z_values, 3),
+  p_value = round(p_values, 3),
+  ci_lower = round(ci_lower, 3),
+  ci_upper = round(ci_upper, 3),
+  odds_ratio = round(odds_ratio, 3),
+  predicted_probability_percent = round(predicted_probability * 100, 2),
+  row.names = NULL
 )
-
-# -----------------------------
-# 4. Final formatted table
-# -----------------------------
-
-final_results <- coef_table[, c(
-  "subcategory",
-  "coef",
-  "std_err",
-  "z",
-  "p_value",
-  "ci_lower",
-  "ci_upper",
-  "odds_ratio",
-  "predicted_probability_percent"
-)]
-
-final_results$subcategory[final_results$subcategory == "(Intercept)"] <- "const"
-
-final_results$coef <- round(final_results$coef, 3)
-final_results$std_err <- round(final_results$std_err, 3)
-final_results$z <- round(final_results$z, 3)
-final_results$p_value <- round(final_results$p_value, 3)
-final_results$ci_lower <- round(final_results$ci_lower, 3)
-final_results$ci_upper <- round(final_results$ci_upper, 3)
-final_results$odds_ratio <- round(final_results$odds_ratio, 3)
 
 print(final_results)
-
-# Optional: export to CSV
-write.csv(final_results, "logit_results_r.csv", row.names = FALSE)
