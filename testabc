@@ -1,43 +1,55 @@
-import matplotlib.pyplot as plt
+import pandas as pd
 
-# Make sure date columns are datetime
-date_cols = [
-    "gps_referral_received_date",
-    "gps_incident_begin_date",
-    "cps_referral_received_date",
-    "cps_incident_begin_date"
+# Abuse indicator columns
+abuse_cols = [
+    'abandonment',
+    'adoption_disruption_dissolution',
+    'behavioral_health_concerns_child',
+    'behavioral_health_concerns_parent_caregiver',
+    'child_sexually_acting_out',
+    'domestic_violence',
+    'homelessness',
+    'inadequate_basic_needs_clothing_food_hygiene',
+    'inadequate_education',
+    'inadequate_health_care',
+    'inadequate_nurturing_affection',
+    'inadequate_shelter_housing',
+    'inappropriate_discipline',
+    'isolation',
+    'lack_of_caregiver',
+    'lack_of_supervision',
+    'other',
+    'substance_use_by_child',
+    'substance_use_by_parent_caregiver',
+    'truancy'
 ]
 
-for col in date_cols:
-    final_df[col] = pd.to_datetime(final_df[col], errors="coerce")
+results_list = []
 
-# Calculate day differences
-final_df["days_gps_ref_to_cps_ref"] = (
-    final_df["cps_referral_received_date"] - final_df["gps_referral_received_date"]
-).dt.days
+for abuse in abuse_cols:
 
-final_df["days_gps_ref_to_cps_incident"] = (
-    final_df["cps_incident_begin_date"] - final_df["gps_referral_received_date"]
-).dt.days
+    df_temp = df.copy()
 
-final_df["days_gps_incident_to_cps_incident"] = (
-    final_df["cps_incident_begin_date"] - final_df["gps_incident_begin_date"]
-).dt.days
+    # Force abuse category to be present
+    df_temp[abuse] = 1
 
-# Histograms
-hist_vars = {
-    "days_gps_ref_to_cps_ref": "GPS referral date to CPS referral date",
-    "days_gps_ref_to_cps_incident": "GPS referral date to CPS incident start date",
-    "days_gps_incident_to_cps_incident": "GPS incident start date to CPS incident start date"
-}
+    # Predict probability
+    probs = result.predict(df_temp)
 
-for col, title in hist_vars.items():
-    plt.figure(figsize=(9, 5))
-    plt.hist(final_df[col].dropna(), bins=50)
-    plt.axvline(0, linestyle="--")
-    plt.title(title)
-    plt.xlabel("Days from GPS to CPS")
-    plt.ylabel("Number of children")
-    plt.show()
+    results_list.append({
+        'subcategory': abuse,
+        'avg_marginal_pred_prob': probs.mean()
+    })
 
-Negative values will appear automatically if CPS happened before GPS.
+ampp_df = pd.DataFrame(results_list)
+
+ampp_df['avg_marginal_pred_prob'] = (
+    ampp_df['avg_marginal_pred_prob'] * 100
+)
+
+ampp_df = ampp_df.sort_values(
+    'avg_marginal_pred_prob',
+    ascending=False
+)
+
+print(ampp_df)
