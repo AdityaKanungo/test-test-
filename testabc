@@ -1,44 +1,56 @@
-# Hessian for standard errors
-fit_hessian <- optim(
-  par = coef_values,
+# -----------------------------
+# R Logit using L-BFGS-B optimizer
+# Closer to Python statsmodels:
+# sm.Logit(y, X).fit(method = "lbfgs")
+# -----------------------------
+
+target_col <- "CPS"
+id_cols <- c("long_person_id")
+
+x_cols <- setdiff(names(df), c(target_col, id_cols))
+
+model_df <- df[, c(target_col, x_cols)]
+
+# Convert all model columns to numeric
+model_df[] <- lapply(model_df, function(x) as.numeric(as.character(x)))
+
+# Drop missing rows
+model_df <- na.omit(model_df)
+
+# y and X
+y <- model_df[[target_col]]
+X <- as.matrix(model_df[, x_cols])
+
+# Add constant like statsmodels sm.add_constant
+X <- cbind(const = 1, X)
+
+# Negative log-likelihood
+neg_loglik <- function(beta, X, y) {
+  eta <- as.vector(X %*% beta)
+  p <- 1 / (1 + exp(-eta))
+  
+  # avoid log(0)
+  eps <- 1e-15
+  p <- pmin(pmax(p, eps), 1 - eps)
+  
+  -sum(y * log(p) + (1 - y) * log(1 - p))
+}
+
+# Starting values
+start_beta <- rep(0, ncol(X))
+
+# Fit using L-BFGS-B
+fit <- optim(
+  par = start_beta,
   fn = neg_loglik,
   X = X,
   y = y,
   method = "L-BFGS-B",
-  hessian = TRUE,
   control = list(maxit = 100)
 )
 
-vcov_mat <- solve(fit_hessian$hessian)
-std_err <- sqrt(diag(vcov_mat))
+# Coefficients
+coef_values <- fit$par
+names(coef_values) <- colnames(X)
 
-z_values <- coef_values / std_err
-p_values <- 2 * (1 - pnorm(abs(z_values)))
-
-ci_lower <- coef_values - 1.96 * std_err
-ci_upper <- coef_values + 1.96 * std_err
-
-odds_ratio <- exp(coef_values)
-
-intercept <- coef_values["const"]
-
-predicted_probability <- ifelse(
-  names(coef_values) == "const",
-  plogis(intercept),
-  plogis(intercept + coef_values)
-)
-
-final_results <- data.frame(
-  subcategory = names(coef_values),
-  coef = round(coef_values, 3),
-  std_err = round(std_err, 3),
-  z = round(z_values, 3),
-  p_value = round(p_values, 3),
-  ci_lower = round(ci_lower, 3),
-  ci_upper = round(ci_upper, 3),
-  odds_ratio = round(odds_ratio, 3),
-  predicted_probability_percent = round(predicted_probability * 100, 2),
-  row.names = NULL
-)
-
-print(final_results)
+coef_values
