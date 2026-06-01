@@ -1,3 +1,28 @@
+library(marginaleffects)
+
+abuse_cols <- setdiff(names(model_df), "CPS")
+
+ampp_list <- list()
+
+for (var in abuse_cols) {
+  
+  cat("Running:", var, "\n")
+  
+  temp <- avg_predictions(
+    model,
+    variables = var,
+    type = "response"
+  )
+  
+  ampp_list[[var]] <- temp
+}
+
+ampp <- do.call(rbind, ampp_list)
+
+print(ampp)
+
+
+
 # abuse columns
 abuse_cols <- setdiff(names(model_df), "CPS")
 
