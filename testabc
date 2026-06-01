@@ -1,3 +1,21 @@
+install.packages("marginaleffects")
+library(marginaleffects)
+
+# abuse columns used in the model
+abuse_cols <- setdiff(names(model_df), "CPS")
+
+# Adjusted marginal predicted probabilities
+ampp <- avg_predictions(
+  model,
+  variables = abuse_cols,
+  type = "response"
+)
+
+print(ampp)
+
+
+
+
 # -----------------------------
 # R Logit using L-BFGS-B optimizer
 # Closer to Python statsmodels:
