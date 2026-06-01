@@ -1,164 +1,19 @@
-library(marginaleffects)
-library(dplyr)
+import pandas as pd
 
-abuse_cols <- setdiff(names(model_df), "CPS")
+results = []
 
-ampp_list <- list()
+for col in abuse_columns:
 
-for (var in abuse_cols) {
-  
-  cat("Running:", var, "\n")
-  
-  temp <- avg_predictions(
-    model,
-    variables = var,
-    type = "response"
-  )
-  
-  temp <- as.data.frame(temp)
-  temp$subcategory <- var
-  
-  ampp_list[[var]] <- temp
-}
+    X_temp = X.copy()
 
-ampp <- bind_rows(ampp_list)
+    # Set abuse category present for everyone
+    X_temp[col] = 1
 
-ampp_final <- ampp %>%
-  select(subcategory, estimate, std.error, conf.low, conf.high, p.value) %>%
-  mutate(
-    adjusted_predicted_probability_percent = round(estimate * 100, 2),
-    conf.low_percent = round(conf.low * 100, 2),
-    conf.high_percent = round(conf.high * 100, 2)
-  )
+    probs = result.predict(X_temp)
 
-print(ampp_final)
+    results.append({
+        "subcategory": col,
+        "predicted_probability": probs.mean()
+    })
 
-
-
-# abuse columns
-abuse_cols <- setdiff(names(model_df), "CPS")
-
-ampp_results <- data.frame()
-
-for (var in abuse_cols) {
-  
-  temp_df <- model_df
-  
-  # set this abuse category = 1 for everyone
-  temp_df[[var]] <- 1
-  
-  # predict probability
-  probs <- predict(
-    model,
-    newdata = temp_df,
-    type = "response"
-  )
-  
-  # average predicted probability
-  ampp_results <- rbind(
-    ampp_results,
-    data.frame(
-      subcategory = var,
-      adjusted_predicted_probability = mean(probs)
-    )
-  )
-}
-
-ampp_results$adjusted_predicted_probability_percent <-
-  round(ampp_results$adjusted_predicted_probability * 100, 2)
-
-ampp_results <- ampp_results[
-  order(-ampp_results$adjusted_predicted_probability_percent),
-]
-
-print(ampp_results)
-
-
-
-ame_results <- data.frame()
-
-for (var in abuse_cols) {
-  
-  df_present <- model_df
-  df_absent <- model_df
-  
-  df_present[[var]] <- 1
-  df_absent[[var]] <- 0
-  
-  p_present <- mean(predict(model, newdata = df_present, type = "response"))
-  p_absent <- mean(predict(model, newdata = df_absent, type = "response"))
-  
-  ame_results <- rbind(
-    ame_results,
-    data.frame(
-      subcategory = var,
-      prob_if_present = p_present,
-      prob_if_absent = p_absent,
-      difference = p_present - p_absent
-    )
-  )
-}
-
-ame_results[, 2:4] <- round(ame_results[, 2:4] * 100, 2)
-
-print(ame_results)
-
-
-
-
-# -----------------------------
-# R Logit using L-BFGS-B optimizer
-# Closer to Python statsmodels:
-# sm.Logit(y, X).fit(method = "lbfgs")
-# -----------------------------
-
-target_col <- "CPS"
-id_cols <- c("long_person_id")
-
-x_cols <- setdiff(names(df), c(target_col, id_cols))
-
-model_df <- df[, c(target_col, x_cols)]
-
-# Convert all model columns to numeric
-model_df[] <- lapply(model_df, function(x) as.numeric(as.character(x)))
-
-# Drop missing rows
-model_df <- na.omit(model_df)
-
-# y and X
-y <- model_df[[target_col]]
-X <- as.matrix(model_df[, x_cols])
-
-# Add constant like statsmodels sm.add_constant
-X <- cbind(const = 1, X)
-
-# Negative log-likelihood
-neg_loglik <- function(beta, X, y) {
-  eta <- as.vector(X %*% beta)
-  p <- 1 / (1 + exp(-eta))
-  
-  # avoid log(0)
-  eps <- 1e-15
-  p <- pmin(pmax(p, eps), 1 - eps)
-  
-  -sum(y * log(p) + (1 - y) * log(1 - p))
-}
-
-# Starting values
-start_beta <- rep(0, ncol(X))
-
-# Fit using L-BFGS-B
-fit <- optim(
-  par = start_beta,
-  fn = neg_loglik,
-  X = X,
-  y = y,
-  method = "L-BFGS-B",
-  control = list(maxit = 100)
-)
-
-# Coefficients
-coef_values <- fit$par
-names(coef_values) <- colnames(X)
-
-coef_values
+pp_df = pd.DataFrame(results)
