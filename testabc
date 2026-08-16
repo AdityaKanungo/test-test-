@@ -16,18 +16,19 @@ WITH base_data AS
             ELSE cad.dte_crtd_queue_autd
         END AS automated_queue_created_date,
 
+        /* Fact */
         ciraof.idn_edw_case_indiv,
         ciraof.idn_edw_alert_cis,
         ciraof.idn_edw_prcs_autmn_rte,
         ciraof.dte_load_edw,
         ciraof.txt_gtpost,
         ciraof.idn_edw_case_cis,
-
         ciraof.idn_reason_rnwl_auto_failed,
         ciraof.idn_reason_rnwl_auto_final,
         ciraof.idn_status_rnwl_auto_failed,
         ciraof.idn_status_rnwl_auto_final,
 
+        /* Alert */
         cad.idn_edw_alert_cis AS idn_edw_alert_cis_cad,
         cad.cde_type_alert,
         cad.nam_type_alert,
@@ -53,27 +54,26 @@ WITH base_data AS
         ON ciraof.idn_edw_alert_cis = cad.idn_edw_alert_cis
 
     WHERE ciraof.txt_gtpost IS NOT NULL
-),
-
-gateposts AS
-(
-    SELECT 'TOTAL' AS gatepost_group, '%B%' AS gatepost_pattern
-    FROM dual
-
-    UNION ALL
-
-    SELECT 'EMR', '%EMR%'
-    FROM dual
-
-    UNION ALL
-
-    SELECT 'MS', '%MS%'
-    FROM dual
 )
 
 SELECT
     b.*,
-    g.gatepost_group
+    'Total Renewals' AS gatepost
 FROM base_data b
-INNER JOIN gateposts g
-    ON b.txt_gtpost LIKE g.gatepost_pattern
+WHERE ',' || b.txt_gtpost || ',' LIKE '%,A,%'
+
+UNION ALL
+
+SELECT
+    b.*,
+    'Selected for EMR' AS gatepost
+FROM base_data b
+WHERE ',' || b.txt_gtpost || ',' LIKE '%,B,%'
+
+UNION ALL
+
+SELECT
+    b.*,
+    'Selected for MS' AS gatepost
+FROM base_data b
+WHERE ',' || b.txt_gtpost || ',' LIKE '%,C,%'
