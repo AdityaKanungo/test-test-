@@ -1,6 +1,7 @@
 WITH base_data AS
 (
     SELECT
+        /* Dates */
         TO_CHAR(
             CASE
                 WHEN cad.cde_type_alert = 'REAP'
@@ -56,24 +57,35 @@ WITH base_data AS
     WHERE ciraof.txt_gtpost IS NOT NULL
 )
 
+
+/* Total Renewals = A */
 SELECT
     b.*,
-    'Total Renewals' AS gatepost
+    'Total Renewals' AS gatepost,
+    'Case Level' AS case_individual_level
 FROM base_data b
 WHERE ',' || b.txt_gtpost || ',' LIKE '%,A,%'
 
+
 UNION ALL
 
+
+/* Selected for EMR = B */
 SELECT
     b.*,
-    'Selected for EMR' AS gatepost
+    'Selected for EMR' AS gatepost,
+    'Case Level' AS case_individual_level
 FROM base_data b
 WHERE ',' || b.txt_gtpost || ',' LIKE '%,B,%'
 
+
 UNION ALL
 
+
+/* Selected for MS = C */
 SELECT
     b.*,
-    'Selected for MS' AS gatepost
+    'Selected for MS' AS gatepost,
+    'Case Level' AS case_individual_level
 FROM base_data b
 WHERE ',' || b.txt_gtpost || ',' LIKE '%,C,%'
