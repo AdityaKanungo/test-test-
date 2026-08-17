@@ -1,37 +1,117 @@
-IF ISNULL([Numerator Count]) OR [Numerator Count] = 0 THEN
+CASE [PARENT_GATEPOST]
 
-    "0 / 0%"
-
-ELSEIF ISNULL(MIN([Denominator Count]))
-    OR MIN([Denominator Count]) = 0 THEN
-
-    STR(INT([Numerator Count])) + " / 0%"
-
-ELSE
-
-    IF [Numerator Count] >= 1000 THEN
-
-        STR(INT([Numerator Count] / 1000))
-        + ","
-        + RIGHT(
-            "000" + STR(INT([Numerator Count]) % 1000),
-            3
+WHEN "Total Renewals" THEN
+    { FIXED :
+        COUNTD(
+            IF [GATEPOST] = "Total Renewals"
+            THEN [IDN_EDW_CASE_CIS]
+            END
         )
+    }
 
-    ELSE
-
-        STR(INT([Numerator Count]))
-
-    END
-
-    + " / "
-    + STR(
-        ROUND(
-            [Numerator Count]
-            / MIN([Denominator Count]) * 100,
-            0
+WHEN "Selected for EMR" THEN
+    { FIXED :
+        COUNTD(
+            IF [GATEPOST] = "Selected for EMR"
+            THEN [IDN_EDW_CASE_CIS]
+            END
         )
-    )
-    + "%"
+    }
+
+WHEN "Selected for AR" THEN
+    { FIXED :
+        COUNTD(
+            IF [GATEPOST] = "Selected for AR"
+            THEN [IDN_EDW_CASE_CIS]
+            END
+        )
+    }
+
+WHEN "Automated Scheduling" THEN
+    { FIXED :
+        COUNTD(
+            IF [GATEPOST] = "Automated Scheduling"
+            THEN [IDN_EDW_CASE_CIS]
+            END
+        )
+    }
+
+WHEN "Selected for MS" THEN
+    { FIXED :
+        COUNTD(
+            IF [GATEPOST] = "Selected for MS"
+            THEN [IDN_EDW_CASE_CIS]
+            END
+        )
+    }
+
+WHEN "Selected for AS" THEN
+    { FIXED :
+        COUNTD(
+            IF [GATEPOST] = "Selected for AS"
+            THEN [IDN_EDW_CASE_CIS]
+            END
+        )
+    }
+
+WHEN "Successful AS" THEN
+    { FIXED :
+        COUNTD(
+            IF [GATEPOST] = "Successful AS"
+            THEN [IDN_EDW_CASE_CIS]
+            END
+        )
+    }
+
+WHEN "Full Automation/ Successful AR" THEN
+    { FIXED :
+        COUNTD(
+            IF [GATEPOST] = "Full Automation/ Successful AR - Automated Scheduling"
+            OR [GATEPOST] = "Full Automation/ Successful AR - Manual Scheduling"
+            THEN [IDN_EDW_CASE_CIS]
+            END
+        )
+    }
+
+WHEN "Partial Automation/ Successful AR" THEN
+    { FIXED :
+        COUNTD(
+            IF [GATEPOST] = "Partial Automation/ Successful AR - Automated Scheduling"
+            OR [GATEPOST] = "Partial Automation/ Successful AR - Manual Scheduling"
+            THEN [IDN_EDW_CASE_CIS]
+            END
+        )
+    }
+
+WHEN "No Automated Renewal" THEN
+    { FIXED :
+        COUNTD(
+            IF [GATEPOST] = "No Automated Renewal - Automated Scheduling"
+            OR [GATEPOST] = "No Automated Renewal - Manual Scheduling"
+            THEN [IDN_EDW_CASE_CIS]
+            END
+        )
+    }
+
+WHEN "Total Individual selected for AR" THEN
+    { FIXED :
+        COUNTD(
+            IF [GATEPOST] = "Individual Successful for AR"
+            OR [GATEPOST] = "Individual Exception for AR"
+            THEN [IDN_EDW_CASE_CIS]
+            END
+        )
+    }
+
+WHEN "Manual Scheduling" THEN
+    { FIXED :
+        COUNTD(
+            IF [GATEPOST] = "Manual Scheduling"
+            THEN [IDN_EDW_CASE_CIS]
+            END
+        )
+    }
+
+ELSE 0
 
 END
