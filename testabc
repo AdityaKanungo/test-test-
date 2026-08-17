@@ -1,1 +1,37 @@
+IF ISNULL([Numerator Count]) OR [Numerator Count] = 0 THEN
 
+    "0 / 0%"
+
+ELSEIF ISNULL(MIN([Denominator Count]))
+    OR MIN([Denominator Count]) = 0 THEN
+
+    STR(INT([Numerator Count])) + " / 0%"
+
+ELSE
+
+    IF [Numerator Count] >= 1000 THEN
+
+        STR(INT([Numerator Count] / 1000))
+        + ","
+        + RIGHT(
+            "000" + STR(INT([Numerator Count]) % 1000),
+            3
+        )
+
+    ELSE
+
+        STR(INT([Numerator Count]))
+
+    END
+
+    + " / "
+    + STR(
+        ROUND(
+            [Numerator Count]
+            / MIN([Denominator Count]) * 100,
+            0
+        )
+    )
+    + "%"
+
+END
