@@ -1,23 +1,16 @@
-IF ISNULL(MIN([Numerator Count]))
-    OR MIN([Numerator Count]) = 0
+IF ISNULL(ATTR([Numerator Count]))
+    OR ATTR([Numerator Count]) = 0
+    OR ISNULL(MIN([Denominator Count]))
+    OR MIN([Denominator Count]) = 0
 THEN
     "0 / 0%"
 
-ELSEIF ISNULL(MIN([Denominator Count]))
-    OR MIN([Denominator Count]) = 0
-THEN
-    STR(INT(MIN([Numerator Count]))) + " / 0%"
-
-ELSEIF MIN([Denominator Count]) < 0
-THEN
-    STR(INT(MIN([Numerator Count]))) + " / -%"
-
 ELSE
-    STR(INT(MIN([Numerator Count])))
+    STR(INT(ATTR([Numerator Count])))
     + " / "
     + STR(
         ROUND(
-            MIN([Numerator Count])
+            ATTR([Numerator Count])
             / MIN([Denominator Count]) * 100,
             0
         )
