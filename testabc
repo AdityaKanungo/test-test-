@@ -1,19 +1,1 @@
-IF ISNULL(ATTR([Numerator Count]))
-    OR ATTR([Numerator Count]) = 0
-    OR ISNULL(MIN([Denominator Count]))
-    OR MIN([Denominator Count]) = 0
-THEN
-    "0 / 0%"
 
-ELSE
-    STR(INT(ATTR([Numerator Count])))
-    + " / "
-    + STR(
-        ROUND(
-            ATTR([Numerator Count])
-            / MIN([Denominator Count]) * 100,
-            0
-        )
-      )
-    + "%"
-END
