@@ -1,19 +1,19 @@
-IF ATTR([PARENT CATEPOS]) = "Total Renewals" THEN
-    REPLACE(FORMAT([Numerator Count], "#,##0"), ",", "'")
+IF MIN([Denominator Count]) = -1 THEN
 
-ELSEIF MIN([Denominator Count]) = -1 THEN
-    REPLACE(FORMAT([Numerator Count], "#,##0"), ",", "'")
+    STR(INT([Numerator Count]))
 
 ELSEIF ISNULL([Numerator Count])
     OR [Numerator Count] = 0
     OR ISNULL(MIN([Denominator Count]))
     OR MIN([Denominator Count]) = 0
 THEN
-    REPLACE(FORMAT([Numerator Count], "#,##0"), ",", "'")
+
+    STR(INT([Numerator Count]))
     + " / 0%"
 
 ELSE
-    REPLACE(FORMAT([Numerator Count], "#,##0"), ",", "'")
+
+    STR(INT([Numerator Count]))
     + " / "
     + STR(
         ROUND(
