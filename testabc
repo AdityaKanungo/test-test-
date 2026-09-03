@@ -1,1 +1,1028 @@
+Yes. With the additional information from these screenshots, I would make the analysis more structured than my earlier plan.
 
+You have more than just the COBOL and SQL. You appear to have a functional-specification package covering AMC05W, AMC10W, AMC15W, AMC20W, AMC25W, AMC30W and AMCMRG, plus text specifications and PKG_INF_MA.sql.
+
+That is extremely useful because you effectively have three sources of truth:
+
+FUNCTIONAL SPECIFICATIONS
+                          │
+                          │
+             ┌────────────┴────────────┐
+             │                         │
+             ▼                         ▼
+       LEGACY COBOL                NEW SQL
+             │                         │
+             ▼                         ▼
+       COBOL OUTPUT              SQL OUTPUT
+             │                         │
+             └────────────┬────────────┘
+                          │
+                          ▼
+                 RECONCILIATION
+                          │
+                          ▼
+                    ROOT CAUSE
+
+And there is an important fourth source if available:
+
+ACTUAL DATA
+                       │
+             ┌─────────┴─────────┐
+             ▼                   ▼
+         COBOL result         SQL result
+             │                   │
+             └─────────┬─────────┘
+                       ▼
+                 Actual mismatch
+
+Since you cannot ask the team questions, your objective should be to extract as much as possible from the artifacts and explicitly identify what cannot be proven.
+
+
+---
+
+The final question you're trying to answer
+
+I would frame the whole project around this:
+
+> "Is the SQL implementation behaviorally equivalent to the legacy COBOL implementation for the seven identified fields? If not, what specific business/technical rule causes the divergence?"
+
+
+
+Not:
+
+> "What does the COBOL code do?"
+
+
+
+And not:
+
+> "Is the SQL code correct?"
+
+
+
+You're doing behavioral equivalence analysis.
+
+
+---
+
+Your seven fields
+
+Everything ultimately comes back to:
+
+1. EFFECTIVE-DATE
+
+
+2. PROCESS-CODE
+
+
+3. SOURCE-INDICATOR
+
+
+4. SIGNATURE-DATE
+
+
+5. SOURCE-FILE-INDICATOR
+
+
+6. VALIDATION-DIGIT
+
+
+7. PREVIOUS-MANAGED-CARE-CODE
+
+
+
+
+---
+
+One important limitation
+
+Because you currently don't have the actual COBOL-vs-SQL mismatching records, you may not be able to conclusively prove the production root cause.
+
+That's okay.
+
+You can still produce an excellent investigation that says:
+
+> "The analysis identified three behavioral differences capable of producing the observed type of discrepancy. Difference #1 is directly supported by source code; #2 is a likely discrepancy; #3 requires execution data to confirm."
+
+
+
+That is much more credible than pretending you've proven something you haven't.
+
+
+---
+
+I would divide your work into 10 phases
+
+PHASE 1  → Inventory all artifacts
+PHASE 2  → Understand functional specifications
+PHASE 3  → Reconstruct COBOL flow
+PHASE 4  → Reconstruct SQL flow
+PHASE 5  → Build COBOL field lineage
+PHASE 6  → Build SQL field lineage
+PHASE 7  → Compare behavior
+PHASE 8  → Investigate migration-specific differences
+PHASE 9  → Build test scenarios / hypotheses
+PHASE 10 → Produce final reconciliation report
+
+Do not jump straight to Phase 7.
+
+
+---
+
+PHASE 1 — Inventory everything
+
+Your screenshots indicate you have something approximately like:
+
+Functional-Specifications-Docs/
+│
+├── AMC05W-Functional-Specification-Doc.docx
+├── AMC10W-Functional-Specification-Doc.docx
+├── AMC15W-Functional-Specification-Doc.docx
+├── AMC20W-Functional-Specification-Doc.docx
+├── AMC25W-Functional-Specification-Doc.docx
+├── AMC30W-Functional-Specification-Doc.docx
+├── AMCMRG-Functional-Specification-Doc.docx
+│
+├── AMC10WS.TXT
+├── AMC20WS.TXT
+├── AMC30WS.TXT
+├── AMCMRGS.TXT
+│
+└── PKG_INF_MA.sql
+
+There may obviously be more files in the actual repository.
+
+Copilot Prompt #1 — Inventory
+
+Give Copilot:
+
+I am performing a COBOL-to-SQL behavioral reconciliation for the MA Weekly Plan Transfer process.
+
+Known process flow:
+
+AMCMRG -> AMC10W -> AMC20W -> AMC30W
+
+Known SQL implementation:
+
+PKG_INF_MA.sql
+
+Fields under investigation:
+
+EFFECTIVE-DATE
+PROCESS-CODE
+SOURCE-INDICATOR
+SIGNATURE-DATE
+SOURCE-FILE-INDICATOR
+VALIDATION-DIGIT
+PREVIOUS-MANAGED-CARE-CODE
+
+The repository also contains functional specification documents for programs including:
+
+AMCMRG
+AMC05W
+AMC10W
+AMC15W
+AMC20W
+AMC25W
+AMC30W
+
+There are also text specification files such as:
+
+AMCMRGS.TXT
+AMC10WS.TXT
+AMC20WS.TXT
+AMC30WS.TXT
+
+IMPORTANT:
+
+Do not analyze the business logic yet.
+
+First create a complete inventory of every artifact relevant to this process.
+
+Search for:
+
+- COBOL source
+- copybooks
+- JCL
+- file layouts
+- FD definitions
+- input files
+- output files
+- called programs
+- calling programs
+- functional specifications
+- TXT specifications
+- SQL packages
+- procedures/functions
+- tables
+- views
+- lookup tables
+- configuration
+- test data
+- sample input
+- sample output
+
+For each artifact provide:
+
+1. File name
+2. Full repository path
+3. Artifact type
+4. Program/package
+5. Relationship to MA Weekly Plan Transfer
+6. Why it is relevant
+
+Also identify artifacts that may influence the seven target fields even if their names do not contain those field names.
+
+Do not infer relationships merely from filenames.
+
+Classify each relationship:
+
+CONFIRMED
+POSSIBLE
+UNKNOWN
+
+Do not make assumptions.
+
+Save the result
+
+01_Artifact_Inventory.md
+
+
+---
+
+PHASE 2 — Analyze the functional specifications FIRST
+
+This is something I'd change from my previous recommendation.
+
+Because you have a whole functional-specification folder, analyze those before deciding what the COBOL is supposed to do.
+
+Why?
+
+You don't want Copilot to interpret COBOL based solely on modern assumptions.
+
+The specs may tell you:
+
+purpose of each program
+
+input/output
+
+record sequencing
+
+business rules
+
+fields
+
+conditions
+
+codes
+
+date rules
+
+managed-care logic
+
+relationships between AMC05W/10W/15W/20W/25W/30W
+
+
+
+---
+
+Copilot Prompt #2 — Functional specification reconnaissance
+
+Analyze all functional specification documents related to the MA Weekly Plan Transfer process.
+
+Relevant programs include:
+
+AMCMRG
+AMC05W
+AMC10W
+AMC15W
+AMC20W
+AMC25W
+AMC30W
+
+Also analyze the TXT specification files where applicable.
+
+Do not compare the specifications with COBOL or SQL yet.
+
+First extract the documented business and processing rules.
+
+For each program identify:
+
+1. Purpose
+2. Inputs
+3. Outputs
+4. Processing sequence
+5. Record selection rules
+6. Record ordering requirements
+7. Date rules
+8. Validation rules
+9. Error/rejection rules
+10. Managed-care rules
+11. Source-file rules
+12. Processing codes
+13. Relationships with other AMC programs
+14. Any references to previous records
+15. Any references to the seven target fields
+
+For the seven target fields:
+
+EFFECTIVE-DATE
+PROCESS-CODE
+SOURCE-INDICATOR
+SIGNATURE-DATE
+SOURCE-FILE-INDICATOR
+VALIDATION-DIGIT
+PREVIOUS-MANAGED-CARE-CODE
+
+extract every documented business rule.
+
+For every finding provide:
+
+Document
+Section/heading/page if available
+Rule
+Relevant field
+Relevant program
+
+Do not infer undocumented behavior.
+
+Clearly distinguish:
+EXPLICITLY DOCUMENTED
+IMPLIED BY DOCUMENTATION
+NOT DOCUMENTED
+
+Save:
+
+02_Functional_Spec_Analysis.md
+
+
+---
+
+PHASE 3 — Build a "business rules dictionary"
+
+This will make your final document understandable to the other team.
+
+Prompt #3
+
+Using the functional specifications, create a business-rules dictionary for MA Weekly Plan Transfer.
+
+For each identified business rule provide:
+
+Rule ID
+Program
+Business concept
+Description
+Input condition
+Expected behavior
+Affected field(s)
+Source document
+Section/page
+Confidence
+
+Group rules into:
+
+- Date rules
+- Process-code rules
+- Source identification rules
+- Signature rules
+- Validation rules
+- Managed-care rules
+- Previous-record rules
+- Error/rejection rules
+
+Do not invent business meanings for unexplained codes.
+
+If a code appears without a documented meaning, record the code and state:
+
+"Meaning not established from available documentation."
+
+Save:
+
+03_Business_Rules.md
+
+
+---
+
+PHASE 4 — Reconstruct the COBOL
+
+Now we investigate the actual implementation.
+
+Prompt #4
+
+Now reverse-engineer the legacy COBOL implementation of:
+
+AMCMRG -> AMC10W -> AMC20W -> AMC30W
+
+Use the functional specifications only as supporting documentation.
+
+The COBOL source code is the implementation source of truth for determining actual behavior.
+
+For each program identify:
+
+1. Entry point
+2. Main processing paragraphs
+3. PERFORM hierarchy
+4. CALL hierarchy
+5. Input files
+6. Output files
+7. FD definitions
+8. Record layouts
+9. Copybooks
+10. Working-storage variables
+11. Initialization
+12. Record reading
+13. Record selection
+14. Record sequencing
+15. Field transformations
+16. Validation
+17. Lookup/reference processing
+18. Previous-record processing
+19. Error/rejection processing
+20. Output processing
+
+Trace actual execution order.
+
+For every significant transformation provide:
+
+Program
+Paragraph
+Input field
+Operation
+Intermediate field
+Condition
+Output field
+
+Pay particular attention to:
+- sequential processing
+- values retained in WORKING-STORAGE
+- initialization
+- previous-record variables
+- file ordering
+- EVALUATE
+- IF/ELSE
+- PERFORM
+- CALL
+- REDEFINES
+- COPY statements
+
+Do not summarize based solely on field names.
+
+Trace the actual code.
+
+
+---
+
+PHASE 5 — Build the COBOL lineage
+
+Now the most important part.
+
+Prompt #5
+
+Perform complete reverse data lineage for the seven target fields in the COBOL implementation:
+
+EFFECTIVE-DATE
+PROCESS-CODE
+SOURCE-INDICATOR
+SIGNATURE-DATE
+SOURCE-FILE-INDICATOR
+VALIDATION-DIGIT
+PREVIOUS-MANAGED-CARE-CODE
+
+Start at the final output field and work backwards.
+
+Do not stop at the first MOVE.
+
+For every intermediate field, identify where that intermediate field itself was populated.
+
+Continue until reaching:
+
+- an external input
+- a database field
+- a hard-coded constant
+- a calculation whose inputs are known
+- or a point where lineage cannot be established
+
+Trace across programs.
+
+For example:
+
+AMC30W output field
+<- AMC30W working field
+<- AMC20W output
+<- AMC20W working field
+<- AMC10W output
+<- AMC10W working field
+<- AMCMRG input
+<- source file
+
+For each target field document:
+
+1. Ultimate source
+2. Every intermediate field
+3. Every transformation
+4. Every condition
+5. Condition precedence
+6. Default values
+7. Validation
+8. Lookup tables
+9. Previous-record dependencies
+10. File-order dependencies
+11. Final output
+
+Provide exact:
+program
+paragraph
+field
+line/reference
+
+If lineage cannot be established, write:
+
+LINEAGE NOT ESTABLISHED
+
+Do not guess.
+
+
+---
+
+PHASE 6 — Analyze SQL independently
+
+Now forget what you learned about COBOL for a moment.
+
+Prompt #6
+
+Reverse-engineer PKG_INF_MA.sql independently.
+
+Do not assume it correctly reproduces COBOL.
+
+Determine:
+
+1. Package entry points
+2. Procedures
+3. Functions
+4. Parameters
+5. Source tables
+6. Source views
+7. Cursors
+8. Temporary tables
+9. SELECT statements
+10. INSERT statements
+11. UPDATE statements
+12. MERGE statements
+13. CASE expressions
+14. JOINs
+15. WHERE conditions
+16. Lookup/reference tables
+17. Date calculations
+18. Window functions
+19. Aggregations
+20. Previous-record logic
+21. NULL handling
+22. Default values
+23. Error handling
+24. Transaction behavior
+
+Then trace each of the seven fields from final target backwards to the ultimate source.
+
+Do not compare against COBOL yet.
+
+The objective is to determine what PKG_INF_MA actually does, not what it appears intended to do.
+
+
+---
+
+PHASE 7 — SQL lineage
+
+Prompt #7
+
+Perform complete reverse data lineage for these seven fields in PKG_INF_MA.sql:
+
+EFFECTIVE-DATE
+PROCESS-CODE
+SOURCE-INDICATOR
+SIGNATURE-DATE
+SOURCE-FILE-INDICATOR
+VALIDATION-DIGIT
+PREVIOUS-MANAGED-CARE-CODE
+
+Start at the final target column.
+
+Trace backwards through:
+
+target column
+<- INSERT/UPDATE/MERGE
+<- CASE/expression
+<- procedure variable
+<- cursor/SELECT
+<- source table
+<- JOIN
+<- lookup table
+
+For every step identify:
+
+- source
+- transformation
+- condition
+- default
+- validation
+- lookup
+- ordering
+- previous-record logic
+
+Also identify whether the SQL uses:
+
+- INNER JOIN
+- LEFT JOIN
+- OUTER JOIN
+- DISTINCT
+- GROUP BY
+- MAX/MIN
+- ROW_NUMBER
+- LAG
+- LEAD
+- correlated subqueries
+- ORDER BY
+
+These constructs can materially change behavior compared with sequential COBOL.
+
+Provide exact package/procedure and line references.
+
+Mark anything uncertain as UNKNOWN.
+
+
+---
+
+PHASE 8 — The big comparison
+
+Now you have:
+
+Functional Specs
+       │
+       ├───────────────┐
+       │               │
+       ▼               ▼
+    COBOL             SQL
+       │               │
+       ▼               ▼
+   COBOL lineage   SQL lineage
+       │               │
+       └───────┬───────┘
+               ▼
+          COMPARISON
+
+Prompt #8 — Behavioral equivalence
+
+Now perform a behavioral equivalence analysis between the legacy COBOL implementation and PKG_INF_MA.sql.
+
+The objective is to determine whether SQL reproduces COBOL behavior, not merely whether the code looks similar.
+
+Analyze these seven fields:
+
+EFFECTIVE-DATE
+PROCESS-CODE
+SOURCE-INDICATOR
+SIGNATURE-DATE
+SOURCE-FILE-INDICATOR
+VALIDATION-DIGIT
+PREVIOUS-MANAGED-CARE-CODE
+
+For each field compare:
+
+1. Ultimate source
+2. Intermediate fields
+3. Transformations
+4. Conditions
+5. Condition precedence
+6. Defaults
+7. Validation
+8. Lookup logic
+9. Previous-record logic
+10. Record ordering
+11. Date behavior
+12. NULL/blank/zero behavior
+13. Character padding
+14. Numeric conversion
+15. Error/rejection behavior
+16. Final output
+
+Classify each:
+
+EQUIVALENT
+LIKELY EQUIVALENT
+DIFFERENT
+POTENTIALLY DIFFERENT
+CANNOT DETERMINE
+
+Create a detailed table:
+
+FIELD
+COBOL LOGIC
+SQL LOGIC
+SPECIFICATION
+EQUIVALENCE
+FIRST POINT OF DIVERGENCE
+POTENTIAL IMPACT
+EVIDENCE
+CONFIDENCE
+
+Do not call something equivalent merely because it works for the normal case.
+
+Look for conditional and edge-case differences.
+
+
+---
+
+9. This next prompt is extremely important
+
+Have Copilot specifically look for COBOL-to-SQL semantic traps.
+
+These are common reasons migrations produce different outputs even when developers believe they've translated the logic correctly.
+
+Prompt #9 — Migration semantic audit
+
+Perform a COBOL-to-SQL semantic migration audit.
+
+Identify any behavior in the COBOL implementation that may not translate directly into SQL.
+
+Focus on:
+
+1. SPACES vs NULL
+2. ZERO vs NULL
+3. LOW-VALUES
+4. HIGH-VALUES
+5. PIC definitions
+6. PIC X vs numeric fields
+7. COMP
+8. COMP-3 / packed decimal
+9. leading zeroes
+10. trailing spaces
+11. field padding
+12. truncation
+13. implicit type conversion
+14. character-to-number conversion
+15. number-to-character conversion
+16. date formats
+17. Julian dates
+18. date arithmetic
+19. system date
+20. processing date
+21. business date
+22. sequential file ordering
+23. retained WORKING-STORAGE state
+24. initialization
+25. previous-record processing
+26. EVALUATE vs CASE
+27. IF/ELSE precedence
+28. multiple matches
+29. duplicate records
+30. SQL JOIN multiplication
+31. missing JOIN records
+32. NULL propagation
+33. MAX/MIN substitutions
+34. cursor ordering
+35. window-function ordering
+36. transaction boundaries
+37. error handling
+
+For every potential issue:
+
+Issue
+Affected field
+COBOL behavior
+SQL behavior
+Why behavior can differ
+Evidence
+Likelihood
+How to test it
+
+
+---
+
+10. Pay special attention to record ordering
+
+This is one of the things I would specifically investigate in your situation.
+
+COBOL often does something like:
+
+READ record
+    ↓
+process
+    ↓
+save value
+    ↓
+READ next record
+    ↓
+compare to previous value
+
+SQL may instead do:
+
+SELECT ...
+FROM ...
+ORDER BY ...
+
+Those are only equivalent if the ordering and grouping semantics are identical.
+
+Ask Copilot:
+
+Prompt #10 — Sequential behavior
+
+Audit the entire MA Weekly Plan Transfer process for dependencies on sequential record processing.
+
+Identify every place where COBOL behavior depends on:
+
+- previous record
+- next record
+- current record
+- retained variable
+- file order
+- sort order
+- member/person grouping
+- effective-date order
+- transaction order
+
+Determine which of the seven target fields depend on such behavior.
+
+Then determine whether PKG_INF_MA.sql reproduces the same ordering and state semantics.
+
+Pay special attention to:
+
+PREVIOUS-MANAGED-CARE-CODE
+
+Determine exactly what "previous" means operationally.
+
+Do not assume it means previous database row.
+
+Provide concrete examples demonstrating where SQL could differ from COBOL.
+
+
+---
+
+11. Deep dive: PREVIOUS-MANAGED-CARE-CODE
+
+I would treat this as a special investigation.
+
+Ask Copilot:
+
+Perform a forensic investigation of PREVIOUS-MANAGED-CARE-CODE.
+
+Determine precisely how COBOL obtains the previous managed-care code.
+
+Trace:
+
+1. Where current managed-care code comes from.
+2. Where previous managed-care code comes from.
+3. What identifies the same entity.
+4. What defines "previous."
+5. Whether effective date determines previous.
+6. Whether file order determines previous.
+7. Whether a retained WORKING-STORAGE variable is involved.
+8. Whether previous value survives between records.
+9. When the previous value is reset.
+10. What happens for the first record.
+11. What happens when there is no previous record.
+12. What happens when dates tie.
+13. What happens with duplicate records.
+
+Then inspect the SQL implementation.
+
+Determine exactly how SQL identifies the previous managed-care code.
+
+Compare the two algorithms.
+
+If SQL uses MAX, LAG, ROW_NUMBER, ORDER BY or another mechanism, determine whether that mechanism is mathematically/behaviorally equivalent to COBOL.
+
+Provide at least three counterexamples where a seemingly reasonable SQL implementation could produce a different result from COBOL.
+
+
+---
+
+12. Deep dive: dates
+
+Do the same separately for:
+
+EFFECTIVE-DATE
+
+SIGNATURE-DATE
+
+
+Prompt #11
+
+Perform a dedicated date-semantic reconciliation for:
+
+EFFECTIVE-DATE
+SIGNATURE-DATE
+
+Trace the complete COBOL and SQL logic.
+
+Investigate:
+
+- source date
+- date format
+- date conversion
+- date validation
+- date arithmetic
+- processing date
+- system date
+- business date
+- previous date
+- effective date
+- start date
+- end date
+- missing date
+- zero date
+- blank date
+- invalid date
+- NULL
+- inclusive comparisons
+- exclusive comparisons
+- year boundaries
+- month boundaries
+- week boundaries
+
+Create a COBOL vs SQL date-behavior matrix.
+
+Identify every condition under which the two implementations could produce different dates.
+
+
+---
+
+13. Deep dive: validation digit
+
+Prompt #12
+
+Perform a complete forensic analysis of VALIDATION-DIGIT.
+
+Determine whether COBOL:
+
+- copies it
+- validates it
+- calculates it
+- recalculates it
+- derives it from other fields
+
+If calculated, identify the exact algorithm.
+
+Identify every input field involved.
+
+Determine:
+
+- field order
+- string concatenation
+- numeric conversion
+- leading zero behavior
+- spaces
+- field lengths
+- truncation
+- modulus/checksum logic
+- intermediate calculations
+- overflow possibilities
+
+Then compare the exact algorithm with SQL.
+
+Show a worked example from repository test data if available.
+
+If no real example exists, create a clearly labeled hypothetical example.
+
+Identify any circumstances in which SQL could calculate a different validation digit.
+
+
+---
+
+14. Now compare the functional specification with both implementations
+
+This gives you a three-way reconciliation.
+
+FUNCTIONAL SPEC
+                        │
+              ┌─────────┴─────────┐
+              ▼                   ▼
+            COBOL                SQL
+              │                   │
+              └─────────┬─────────┘
+                        ▼
+                    RECONCILE
+
+Prompt #13
+
+Perform a three-way reconciliation for the seven target fields:
+
+FUNCTIONAL SPECIFICATION
+vs
+COBOL IMPLEMENTATION
+vs
+SQL IMPLEMENTATION
+
+For every business rule determine:
+
+1. What the specification says
+2. What COBOL actually does
+3. What SQL actually does
+
+Classify:
+
+SPEC = COBOL = SQL
+SPEC = COBOL != SQL
+SPEC != COBOL = SQL
+SPEC != COBOL != SQL
+INSUFFICIENT INFORMATION
+
+For each d
