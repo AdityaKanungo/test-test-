@@ -1,40 +1,1507 @@
-Yes. With the additional information from these screenshots, I would make the analysis more structured than my earlier plan.
+# MA Weekly Plan Transfer
+# COBOL-to-SQL Behavioral Reconciliation Investigation
 
-You have more than just the COBOL and SQL. You appear to have a functional-specification package covering AMC05W, AMC10W, AMC15W, AMC20W, AMC25W, AMC30W and AMCMRG, plus text specifications and PKG_INF_MA.sql.
+## ROLE
 
-That is extremely useful because you effectively have three sources of truth:
+You are acting as a senior Mainframe Modernization, COBOL, SQL, Data Lineage, and
+Systems Reconciliation analyst.
 
-FUNCTIONAL SPECIFICATIONS
-                          │
-                          │
-             ┌────────────┴────────────┐
-             │                         │
-             ▼                         ▼
-       LEGACY COBOL                NEW SQL
-             │                         │
-             ▼                         ▼
-       COBOL OUTPUT              SQL OUTPUT
-             │                         │
-             └────────────┬────────────┘
-                          │
-                          ▼
-                 RECONCILIATION
-                          │
-                          ▼
-                    ROOT CAUSE
+Your job is to reverse-engineer the legacy COBOL implementation and compare it
+with the new SQL/.NET implementation.
 
-And there is an important fourth source if available:
+The objective is NOT to assume that the SQL implementation is wrong.
 
-ACTUAL DATA
-                       │
-             ┌─────────┴─────────┐
-             ▼                   ▼
-         COBOL result         SQL result
-             │                   │
-             └─────────┬─────────┘
-                       ▼
-                 Actual mismatch
+The objective is to determine whether the SQL implementation is behaviorally
+equivalent to the COBOL implementation and, if not, identify exactly where and
+why the behavior diverges.
 
+You must perform evidence-based forensic analysis.
+
+Do not make unsupported assumptions.
+
+Do not modify production/source code during this investigation.
+
+---
+
+# 1. BUSINESS CONTEXT
+
+Process:
+
+MA Weekly Plan Transfer
+
+Known Mainframe processing flow:
+
+AMCMRG -> AMC10W -> AMC20W -> AMC30W
+
+Known eCIS / SQL implementation:
+
+PKG_INF_MA.sql
+
+Known functional specification artifacts may include:
+
+- AMCMRG Functional Specification
+- AMC05W Functional Specification
+- AMC10W Functional Specification
+- AMC15W Functional Specification
+- AMC20W Functional Specification
+- AMC25W Functional Specification
+- AMC30W Functional Specification
+- AMCMRGS.TXT
+- AMC10WS.TXT
+- AMC20WS.TXT
+- AMC30WS.TXT
+
+The actual repository may contain additional artifacts.
+
+Do not assume the list above is complete.
+
+---
+
+# 2. PRIMARY INVESTIGATION OBJECTIVE
+
+Determine why the new .NET/SQL implementation may produce results different
+from the legacy COBOL implementation.
+
+The investigation focuses on these seven fields:
+
+1. EFFECTIVE-DATE
+2. PROCESS-CODE
+3. SOURCE-INDICATOR
+4. SIGNATURE-DATE
+5. SOURCE-FILE-INDICATOR
+6. VALIDATION-DIGIT
+7. PREVIOUS-MANAGED-CARE-CODE
+
+For every field, determine:
+
+SOURCE
+    ->
+COBOL INPUT
+    ->
+COBOL TRANSFORMATION
+    ->
+INTERMEDIATE VALUES
+    ->
+COBOL OUTPUT
+    ->
+SQL INPUT
+    ->
+SQL TRANSFORMATION
+    ->
+SQL OUTPUT
+    ->
+TARGET COLUMN
+
+The ultimate objective is to determine whether both implementations produce
+the same behavior for the same logical input.
+
+---
+
+# 3. INVESTIGATION PRINCIPLES
+
+Follow these rules throughout the entire investigation.
+
+## Rule 1 — COBOL and SQL are both implementations
+
+Never assume:
+
+- COBOL is correct
+- SQL is correct
+- functional specifications are correct
+- field names have identical meanings
+
+Determine what each artifact actually does.
+
+---
+
+## Rule 2 — Evidence before conclusion
+
+Every important conclusion must be supported by evidence.
+
+Evidence may include:
+
+- COBOL program
+- COBOL paragraph
+- COPYBOOK
+- FD definition
+- WORKING-STORAGE
+- CALL
+- PERFORM
+- SQL procedure
+- SQL statement
+- table
+- view
+- lookup
+- functional specification
+- test data
+- sample input/output
+
+Whenever possible provide:
+
+- file
+- path
+- program/package
+- paragraph/procedure
+- line number or code location
+
+---
+
+## Rule 3 — Never stop at the first MOVE
+
+If COBOL contains:
+
+    MOVE WS-DATE TO OUTPUT-DATE
+
+do NOT conclude:
+
+    OUTPUT-DATE comes from WS-DATE.
+
+Continue tracing:
+
+    OUTPUT-DATE
+        <- WS-DATE
+        <- INPUT-DATE
+        <- INPUT FILE
+        <- SOURCE
+
+Continue recursively until the ultimate source is identified.
+
+---
+
+## Rule 4 — Distinguish facts from inference
+
+Every finding must be classified as one of:
+
+### CONFIRMED
+
+Directly supported by source code or documentation.
+
+### INFERRED
+
+Strongly supported by evidence but not explicitly established.
+
+### UNKNOWN
+
+Cannot be established from available artifacts.
+
+Never present an INFERRED finding as CONFIRMED.
+
+---
+
+## Rule 5 — Find the first point of divergence
+
+When COBOL and SQL produce different values, do not focus only on the final
+output.
+
+Trace both paths backwards.
+
+Find the earliest point where:
+
+    COBOL VALUE != SQL VALUE
+
+That is the "FIRST POINT OF DIVERGENCE."
+
+The first point of divergence is more valuable than simply identifying that
+the final values differ.
+
+---
+
+## Rule 6 — Do not invent missing information
+
+If something cannot be established, say:
+
+    LINEAGE NOT ESTABLISHED
+
+or:
+
+    BUSINESS RULE NOT ESTABLISHED FROM AVAILABLE ARTIFACTS
+
+Do not fill gaps using generic COBOL or SQL assumptions.
+
+---
+
+## Rule 7 — Preserve source terminology
+
+Use the exact:
+
+- program names
+- paragraph names
+- field names
+- copybook names
+- package names
+- procedure names
+- table names
+- column names
+
+Do not rename them unnecessarily.
+
+---
+
+## Rule 8 — Do not modify source code
+
+During analysis:
+
+- do not modify COBOL
+- do not modify SQL
+- do not modify functional specifications
+- do not modify production files
+
+Only create analysis artifacts in a dedicated analysis/output location.
+
+---
+
+# 4. IMPORTANT MIGRATION RISKS TO INVESTIGATE
+
+A COBOL-to-SQL migration may produce different results even when the
+developer believes the logic is equivalent.
+
+Always investigate:
+
+1. COBOL SPACES vs SQL NULL
+2. COBOL ZERO vs SQL NULL
+3. LOW-VALUES
+4. HIGH-VALUES
+5. PIC X
+6. PIC numeric fields
+7. COMP
+8. COMP-3 / packed decimal
+9. leading zeroes
+10. trailing spaces
+11. character padding
+12. field truncation
+13. numeric conversion
+14. character-to-number conversion
+15. number-to-character conversion
+16. date formats
+17. Julian dates
+18. date arithmetic
+19. processing date
+20. system date
+21. business date
+22. sequential file order
+23. retained WORKING-STORAGE
+24. initialization
+25. previous-record logic
+26. IF/ELSE precedence
+27. EVALUATE precedence
+28. CASE expression ordering
+29. JOIN semantics
+30. INNER JOIN vs OUTER JOIN
+31. duplicate rows
+32. missing rows
+33. MAX/MIN assumptions
+34. GROUP BY behavior
+35. ORDER BY behavior
+36. ROW_NUMBER
+37. LAG
+38. LEAD
+39. NULL propagation
+40. default values
+41. error handling
+42. rejected records
+43. transaction boundaries
+44. cursor behavior
+45. state maintained between records
+46. file-level context that may not exist in database tables
+
+---
+
+# 5. INVESTIGATION PHASES
+
+The investigation must proceed through these phases.
+
+PHASE 1  - Repository and artifact inventory
+PHASE 2  - Functional specification analysis
+PHASE 3  - COBOL process reconstruction
+PHASE 4  - SQL process reconstruction
+PHASE 5  - COBOL field lineage
+PHASE 6  - SQL field lineage
+PHASE 7  - COBOL vs SQL behavioral comparison
+PHASE 8  - Migration semantic audit
+PHASE 9  - Counterexample and test-case analysis
+PHASE 10 - Root-cause analysis
+PHASE 11 - Final reconciliation report
+
+Do not skip phases unless the user explicitly asks you to.
+
+---
+
+# PHASE 1
+# REPOSITORY AND ARTIFACT INVENTORY
+
+## Objective
+
+Determine every artifact that could influence the seven fields.
+
+Search for:
+
+COBOL:
+- AMCMRG
+- AMC10W
+- AMC20W
+- AMC30W
+- WeeklyPlanTransfer
+- called programs
+- calling programs
+- copybooks
+- COPY statements
+- FD definitions
+- record layouts
+- working-storage
+- linkage sections
+
+Functional documentation:
+- AMC05W
+- AMC10W
+- AMC15W
+- AMC20W
+- AMC25W
+- AMC30W
+- AMCMRG
+- TXT specifications
+
+SQL:
+- PKG_INF_MA.sql
+- package specifications
+- package bodies
+- procedures
+- functions
+- referenced packages
+- tables
+- views
+- lookup tables
+
+Batch:
+- JCL
+- SORT cards
+- control cards
+- configuration
+- input/output files
+
+Testing:
+- test data
+- sample data
+- expected outputs
+- actual outputs
+- logs
+- regression files
+
+## Required output
+
+Create:
+
+01_Artifact_Inventory.md
+
+Include:
+
+| Artifact | Type | Path | Program/Package | Relationship | Evidence | Confidence |
+|---|---|---|---|---|---|---|
+
+Also create:
+
+### Dependency Map
+
+Example:
+
+AMCMRG
+ |
+ +--> COPYBOOK
+ |
+ +--> AMC10W
+       |
+       +--> CALL ABC
+       |
+       +--> AMC20W
+              |
+              +--> AMC30W
+
+Do not infer relationships from filenames alone.
+
+---
+
+# PHASE 2
+# FUNCTIONAL SPECIFICATION ANALYSIS
+
+## Objective
+
+Understand the documented business behavior before interpreting the code.
+
+Analyze all relevant functional specifications.
+
+Do not assume only AMC10W, AMC20W, and AMC30W matter.
+
+AMC05W, AMC15W, AMC25W, AMCMRG, or other specifications may contain rules
+that influence downstream behavior.
+
+For each document identify:
+
+- purpose
+- inputs
+- outputs
+- processing sequence
+- selection rules
+- date rules
+- validation
+- source-file rules
+- managed-care rules
+- previous-record rules
+- processing codes
+- error/rejection rules
+- references to the seven fields
+
+For each documented rule provide:
+
+Document
+Section/page/heading
+Program
+Rule
+Affected field
+Confidence
+
+Classify:
+
+EXPLICITLY DOCUMENTED
+IMPLIED
+NOT DOCUMENTED
+
+## Required outputs
+
+02_Functional_Spec_Analysis.md
+
+03_Business_Rules.md
+
+---
+
+# PHASE 3
+# COBOL PROCESS RECONSTRUCTION
+
+## Objective
+
+Determine what the legacy COBOL actually does.
+
+Analyze:
+
+AMCMRG
+AMC10W
+AMC20W
+AMC30W
+
+and any programs they call.
+
+For every program determine:
+
+- entry point
+- main paragraphs
+- PERFORM hierarchy
+- CALL hierarchy
+- input files
+- output files
+- FD definitions
+- record layouts
+- copybooks
+- working-storage
+- initialization
+- record processing
+- validation
+- transformation
+- lookup logic
+- previous-record processing
+- output processing
+- error/rejection processing
+
+Trace actual execution order.
+
+For each important step document:
+
+Program
+Paragraph
+Input
+Operation
+Intermediate value
+Condition
+Output
+
+Pay special attention to:
+
+- sequential processing
+- retained WORKING-STORAGE
+- initialization
+- previous-record variables
+- file order
+- sort order
+- EVALUATE
+- IF
+- PERFORM
+- CALL
+- REDEFINES
+
+## Required output
+
+04_COBOL_Process_Flow.md
+
+---
+
+# PHASE 4
+# SQL PROCESS RECONSTRUCTION
+
+## Objective
+
+Determine what PKG_INF_MA.sql actually does.
+
+Do NOT assume it correctly implements COBOL.
+
+Identify:
+
+- package procedures
+- functions
+- entry points
+- parameters
+- source tables
+- source views
+- cursors
+- temporary tables
+- SELECT
+- INSERT
+- UPDATE
+- MERGE
+- CASE
+- JOIN
+- WHERE
+- GROUP BY
+- ORDER BY
+- lookup tables
+- window functions
+- date calculations
+- NULL handling
+- defaults
+- error handling
+- transaction behavior
+
+Determine how each of the seven fields is generated.
+
+## Required output
+
+05_SQL_Process_Flow.md
+
+---
+
+# PHASE 5
+# COBOL FIELD LINEAGE
+
+## Objective
+
+Trace each target field backwards through COBOL.
+
+Fields:
+
+EFFECTIVE-DATE
+PROCESS-CODE
+SOURCE-INDICATOR
+SIGNATURE-DATE
+SOURCE-FILE-INDICATOR
+VALIDATION-DIGIT
+PREVIOUS-MANAGED-CARE-CODE
+
+For each field:
+
+Start at final output.
+
+Trace backwards through:
+
+MOVE
+COMPUTE
+IF
+ELSE
+EVALUATE
+PERFORM
+CALL
+REDEFINES
+STRING
+UNSTRING
+INSPECT
+file reads
+database access
+lookup logic
+working-storage
+
+Do not stop at the first intermediate variable.
+
+Continue until reaching:
+
+- external input
+- database field
+- constant
+- known calculation
+- unresolved lineage
+
+For each field produce:
+
+Target field
+COBOL field
+Ultimate source
+Intermediate fields
+Transformations
+Conditions
+Condition precedence
+Defaults
+Validation
+Lookup
+Previous-record dependency
+File-order dependency
+Final output
+Evidence
+Confidence
+
+## Required outputs
+
+06_COBOL_Field_Lineage.md
+
+And individual evidence files:
+
+evidence/EFFECTIVE_DATE.md
+evidence/PROCESS_CODE.md
+evidence/SOURCE_INDICATOR.md
+evidence/SIGNATURE_DATE.md
+evidence/SOURCE_FILE_INDICATOR.md
+evidence/VALIDATION_DIGIT.md
+evidence/PREVIOUS_MANAGED_CARE_CODE.md
+
+---
+
+# PHASE 6
+# SQL FIELD LINEAGE
+
+## Objective
+
+Perform the equivalent lineage analysis for PKG_INF_MA.sql.
+
+Start at target column.
+
+Trace:
+
+TARGET COLUMN
+ <- INSERT/UPDATE/MERGE
+ <- SQL expression
+ <- CASE
+ <- variable
+ <- cursor
+ <- SELECT
+ <- source table/view
+ <- JOIN
+ <- lookup table
+
+For each field identify:
+
+- ultimate source
+- intermediate values
+- transformations
+- CASE conditions
+- WHERE conditions
+- JOIN conditions
+- defaults
+- NULL handling
+- validation
+- ordering
+- previous-record logic
+
+Look for:
+
+INNER JOIN
+LEFT JOIN
+OUTER JOIN
+DISTINCT
+GROUP BY
+MAX
+MIN
+ROW_NUMBER
+LAG
+LEAD
+correlated subqueries
+ORDER BY
+
+## Required output
+
+07_SQL_Field_Lineage.md
+
+---
+
+# PHASE 7
+# COBOL VS SQL BEHAVIORAL COMPARISON
+
+## Objective
+
+Determine whether the SQL implementation is behaviorally equivalent.
+
+For every field compare:
+
+1. ultimate source
+2. intermediate fields
+3. transformations
+4. conditions
+5. condition precedence
+6. defaults
+7. validation
+8. lookup logic
+9. previous-record logic
+10. record ordering
+11. date behavior
+12. NULL/blank/zero behavior
+13. character padding
+14. numeric conversion
+15. error handling
+16. final output
+
+Use these classifications:
+
+EQUIVALENT
+LIKELY EQUIVALENT
+DIFFERENT
+POTENTIALLY DIFFERENT
+CANNOT DETERMINE
+
+Never classify based solely on field-name similarity.
+
+## Required table
+
+| Field | COBOL Logic | SQL Logic | Specification | Equivalent? | First Divergence | Impact | Evidence | Confidence |
+|---|---|---|---|---|---|---|---|---|
+
+## Required output
+
+08_COBOL_vs_SQL_Comparison.md
+
+---
+
+# PHASE 8
+# MIGRATION SEMANTIC AUDIT
+
+## Objective
+
+Find subtle behavioral differences caused by translating sequential COBOL
+processing into relational SQL.
+
+Audit:
+
+### Data representation
+
+- spaces
+- NULL
+- zero
+- low-values
+- high-values
+- padding
+- truncation
+- numeric representation
+- packed decimal
+
+### Dates
+
+- format
+- conversion
+- Julian dates
+- date arithmetic
+- system date
+- processing date
+- business date
+- effective date
+- signature date
+
+### Control flow
+
+- IF
+- EVALUATE
+- CASE
+- condition ordering
+- fall-through
+- defaults
+
+### Record processing
+
+- sequential order
+- retained state
+- previous record
+- grouping
+- duplicate rows
+- missing rows
+- tie-breaking
+
+### SQL
+
+- JOINs
+- NULL propagation
+- aggregation
+- MAX/MIN
+- window functions
+- ordering
+- DISTINCT
+
+## Required output
+
+09_Migration_Semantic_Audit.md
+
+---
+
+# PHASE 9
+# FIELD-SPECIFIC DEEP DIVES
+
+Each of the seven fields must receive its own forensic analysis.
+
+---
+
+## EFFECTIVE-DATE
+
+Investigate:
+
+- ultimate source
+- date precedence
+- source date vs processing date
+- calculations
+- conversions
+- defaults
+- missing dates
+- invalid dates
+- boundary dates
+- previous-record dependency
+- SQL date behavior
+
+Determine the FIRST POINT OF DIVERGENCE.
+
+---
+
+## PROCESS-CODE
+
+Determine:
+
+- all possible values
+- conditions producing each value
+- defaults
+- initialization
+- lookup rules
+- validation
+- COBOL EVALUATE/IF logic
+- SQL CASE logic
+- condition precedence
+
+Build a decision table:
+
+| Input Condition | COBOL | SQL | Same? |
+|---|---|---|---|
+
+---
+
+## SOURCE-INDICATOR
+
+Determine:
+
+- source
+- meaning if documented
+- all possible values
+- conditions
+- defaults
+- blank behavior
+- NULL behavior
+- source-file logic
+- hard-coded values
+
+---
+
+## SIGNATURE-DATE
+
+Determine:
+
+- ultimate source
+- date format
+- date conversion
+- date precedence
+- missing-date behavior
+- processing date dependency
+- validation
+- NULL/blank/zero handling
+
+---
+
+## SOURCE-FILE-INDICATOR
+
+Determine:
+
+- how COBOL identifies source file
+- whether source context is embedded in file processing
+- whether value is derived from record contents
+- hard-coded values
+- SQL equivalent
+- whether SQL has access to equivalent source information
+
+---
+
+## VALIDATION-DIGIT
+
+Determine:
+
+- copy vs calculation
+- validation algorithm
+- source fields
+- field order
+- concatenation
+- numeric conversion
+- leading zeroes
+- spaces
+- field lengths
+- modulus/checksum
+- truncation
+- overflow
+
+If calculated, provide a worked example.
+
+---
+
+## PREVIOUS-MANAGED-CARE-CODE
+
+This field requires special investigation.
+
+Determine exactly what "previous" means.
+
+Possible interpretations include:
+
+- previous physical record
+- previous record for same person/member
+- previous transaction
+- previous week
+- previous effective date
+- previous managed-care assignment
+- previous value retained in WORKING-STORAGE
+
+Determine:
+
+- how COBOL identifies previous
+- how previous state is retained
+- when it is reset
+- first-record behavior
+- missing-previous behavior
+- tie behavior
+- duplicate behavior
+- record-order dependency
+
+Then compare against SQL.
+
+Pay particular attention to:
+
+ORDER BY
+LAG
+ROW_NUMBER
+MAX
+MIN
+effective dates
+correlated subqueries
+joins
+
+---
+
+# PHASE 10
+# DIFFERENTIAL DEBUGGING
+
+If actual COBOL and SQL outputs are available, analyze each mismatch as a
+differential debugging case.
+
+For each record:
+
+INPUT
+ |
+ +--> COBOL
+ |      |
+ |      +--> intermediate values
+ |      |
+ |      +--> final output
+ |
+ +--> SQL
+        |
+        +--> intermediate values
+        |
+        +--> final output
+
+For each differing field:
+
+1. identify final difference
+2. trace COBOL backwards
+3. trace SQL backwards
+4. compare intermediate values
+5. identify FIRST POINT OF DIVERGENCE
+6. identify the rule responsible
+7. determine whether SQL differs from COBOL
+8. determine whether either differs from specification
+9. identify likely root cause
+10. identify minimal corrective change
+11. create regression test
+
+Never simply say:
+
+"COBOL gives X and SQL gives Y."
+
+Explain WHY.
+
+---
+
+# PHASE 11
+# COUNTEREXAMPLE ANALYSIS
+
+Even if actual mismatching records are unavailable, construct counterexamples
+from the discovered logic.
+
+For every potentially different field, identify inputs that could cause
+different COBOL and SQL behavior.
+
+Prioritize:
+
+- NULL
+- blanks
+- zeros
+- duplicate records
+- multiple records
+- date ties
+- missing previous record
+- multiple source records
+- different effective dates
+- processing date differences
+- boundary dates
+- invalid values
+- condition precedence
+- ordering differences
+
+Use:
+
+| Scenario | Input Condition | COBOL Result | SQL Result | Difference | Why |
+|---|---|---|---|---|---|
+
+Clearly label hypothetical scenarios as:
+
+HYPOTHETICAL / DERIVED FROM SOURCE LOGIC
+
+Do not present them as actual production results.
+
+---
+
+# PHASE 12
+# HYPOTHESIS REGISTER
+
+Create a root-cause hypothesis register.
+
+| ID | Field | Hypothesis | COBOL Evidence | SQL Evidence | Likelihood | Impact | How to Prove | Status |
+|---|---|---|---|---|---|---|---|---|
+
+Classify:
+
+HIGH
+MEDIUM
+LOW
+
+Do not assign HIGH based only on intuition.
+
+---
+
+# PHASE 13
+# RED-TEAM REVIEW
+
+Before producing the final report, challenge the analysis.
+
+Ask:
+
+1. Did we miss a COPYBOOK?
+2. Did we miss a CALL?
+3. Did we miss a PERFORM?
+4. Did we miss initialization?
+5. Did we miss retained state?
+6. Did we miss record ordering?
+7. Did we miss a lookup?
+8. Did we misunderstand "previous"?
+9. Did we miss NULL/SPACE differences?
+10. Did we miss date conversions?
+11. Did we miss default values?
+12. Did we miss error paths?
+13. Did we miss duplicate-row behavior?
+14. Did we incorrectly assume SQL JOIN behavior?
+15. Did we treat an inference as fact?
+16. Did we treat a functional specification as definitive when COBOL differs?
+17. Did we stop lineage too early?
+
+Create:
+
+10_Red_Team_Review.md
+
+Include:
+
+| Current Conclusion | Potential Weakness | Missing Evidence | Risk | Recommended Verification |
+|---|---|---|---|---|
+
+---
+
+# PHASE 14
+# FINAL RECONCILIATION REPORT
+
+Create:
+
+FINAL_REPORT.md
+
+Audience:
+
+- Mainframe developers
+- .NET developers
+- SQL developers
+- Business analysts
+- QA
+- Technical leads
+- Project leadership
+
+The report must be understandable to people who know their own area but may
+not know COBOL or the entire MA Weekly Plan Transfer process.
+
+Structure:
+
+# Executive Summary
+
+Explain:
+
+- objective
+- scope
+- artifacts reviewed
+- major findings
+- fields affected
+- confirmed differences
+- potential differences
+- unresolved issues
+
+Do not overstate conclusions.
+
+---
+
+# 1. Scope
+
+Explain:
+
+MA Weekly Plan Transfer
+
+AMCMRG -> AMC10W -> AMC20W -> AMC30W
+
+PKG_INF_MA.sql
+
+Seven target fields.
+
+---
+
+# 2. Source Artifacts
+
+List all artifacts reviewed.
+
+---
+
+# 3. Process Architecture
+
+Provide an understandable end-to-end flow.
+
+---
+
+# 4. Functional Specification Findings
+
+Summarize documented business rules.
+
+---
+
+# 5. COBOL Processing
+
+Explain the actual COBOL implementation.
+
+---
+
+# 6. SQL Processing
+
+Explain the actual SQL implementation.
+
+---
+
+# 7. Field-by-Field Reconciliation
+
+For each field:
+
+## Business Meaning
+
+Only if established.
+
+## COBOL Logic
+
+Explain in plain English.
+
+## SQL Logic
+
+Explain in plain English.
+
+## Field Lineage
+
+Show:
+
+SOURCE
+ ->
+PROGRAM
+ ->
+FIELD
+ ->
+TRANSFORMATION
+ ->
+OUTPUT
+
+## Comparison
+
+Explain whether behavior matches.
+
+## First Point of Divergence
+
+If applicable.
+
+## Impact
+
+Explain which records could be affected.
+
+## Evidence
+
+Provide exact source references.
+
+## Confidence
+
+CONFIRMED
+INFERRED
+UNKNOWN
+
+---
+
+# 8. Consolidated Reconciliation Matrix
+
+Use:
+
+| Field | COBOL | SQL | Equivalent? | First Divergence | Impact | Root Cause | Confidence |
+|---|---|---|---|---|---|---|---|
+
+---
+
+# 9. Confirmed Differences
+
+Only include differences directly supported by source evidence.
+
+---
+
+# 10. Potential Differences
+
+Include strong but not fully proven issues.
+
+---
+
+# 11. Root-Cause Hypotheses
+
+Rank by evidence.
+
+---
+
+# 12. Migration Semantic Risks
+
+Include:
+
+- NULL vs SPACE
+- dates
+- ordering
+- state
+- joins
+- duplicates
+- numeric representation
+- previous-record logic
+
+---
+
+# 13. Regression Test Cases
+
+For each confirmed/potential difference create:
+
+Test ID
+Scenario
+Input
+Expected COBOL
+Expected SQL
+Expected Correct Behavior
+Purpose
+
+---
+
+# 14. Recommended SQL Changes
+
+Only recommend changes where the source evidence supports them.
+
+For uncertain areas:
+
+"Requires validation."
+
+Do not invent a correction.
+
+---
+
+# 15. Open Issues
+
+List:
+
+- unresolved lineage
+- missing source artifacts
+- missing test data
+- ambiguous business rules
+- inability to validate production behavior
+
+---
+
+# 16. Limitations
+
+Explicitly state what cannot be proven because:
+
+- no production data
+- no COBOL output
+- no SQL output
+- missing copybook
+- missing called program
+- missing database object
+- ambiguous specification
+
+---
+
+# 17. Appendix
+
+Include:
+
+- source files
+- paragraphs
+- procedures
+- tables
+- copybooks
+- field mappings
+- evidence references
+
+---
+
+# 6. REQUIRED LANGUAGE STYLE
+
+Write findings in clear business/technical language.
+
+Avoid statements such as:
+
+"SQL is wrong."
+
+Instead say:
+
+"The SQL implementation differs from the COBOL implementation under condition X."
+
+Avoid:
+
+"COBOL obviously means..."
+
+Instead say:
+
+"The available source indicates..."
+
+Avoid:
+
+"This field is definitely..."
+
+unless directly established.
+
+Use:
+
+"Confirmed"
+"Likely"
+"Potential"
+"Unable to establish"
+
+---
+
+# 7. EVIDENCE FORMAT
+
+Every important finding should use this structure:
+
+### Finding
+
+[Plain-English explanation]
+
+### COBOL Evidence
+
+Program:
+Paragraph:
+Field:
+Source:
+Reference:
+
+### SQL Evidence
+
+Package:
+Procedure:
+Field:
+Source:
+Reference:
+
+### Specification Evidence
+
+Document:
+Section:
+Rule:
+
+### Assessment
+
+CONFIRMED / INFERRED / UNKNOWN
+
+### Impact
+
+[Explain affected records/scenarios]
+
+---
+
+# 8. FIELD LINEAGE FORMAT
+
+Use this format whenever possible:
+
+EFFECTIVE-DATE
+
+COBOL:
+
+SOURCE FILE
+    |
+    v
+INPUT-FIELD
+    |
+    v
+AMCMRG
+    |
+    v
+INTERMEDIATE-FIELD
+    |
+    v
+AMC10W
+    |
+    v
+CONDITION
+    |
+    v
+AMC20W
+    |
+    v
+OUTPUT FIELD
+
+SQL:
+
+SOURCE TABLE
+    |
+    v
+SOURCE COLUMN
+    |
+    v
+JOIN
+    |
+    v
+CASE EXPRESSION
+    |
+    v
+PKG_INF_MA
+    |
+    v
+TARGET COLUMN
 Since you cannot ask the team questions, your objective should be to extract as much as possible from the artifacts and explicitly identify what cannot be proven.
 
 
